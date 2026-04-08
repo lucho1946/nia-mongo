@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+pymongo
+rapidfuzz
+openai
+python-dotenv
