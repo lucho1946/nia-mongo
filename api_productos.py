@@ -4,6 +4,11 @@ import json
 import re
 import unicodedata
 from difflib import SequenceMatcher
+import os
+from dotenv import load_dotenv
+from azure.storage.blob import BlobServiceClient
+
+load_dotenv()
 
 app = FastAPI(title="NIA API", version="5.0.0")
 
@@ -18,6 +23,25 @@ POSIBLES_CLAVES_CODIGO = [
 productos = []
 col_codigo = None
 claves_disponibles = []
+
+
+# =========================
+# DESCARGA DESDE AZURE STORAGE
+# =========================
+def descargar_productos_json():
+    ruta = Path(ARCHIVO_DATOS)
+    if ruta.exists():
+        print("productos.json ya existe, no se descarga.")
+        return
+    print("Descargando productos.json desde Azure Storage...")
+    conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    if not conn_str:
+        raise ValueError("No se encontró AZURE_STORAGE_CONNECTION_STRING en las variables de entorno.")
+    client = BlobServiceClient.from_connection_string(conn_str)
+    blob = client.get_blob_client(container="datos", blob="productos.json")
+    with open(ruta, "wb") as f:
+        f.write(blob.download_blob().readall())
+    print("productos.json descargado exitosamente.")
 
 
 # =========================
@@ -70,10 +94,6 @@ def valor(p: dict, campo: str) -> str:
 
 
 def limpiar_producto(p: dict) -> dict:
-    """
-    Devuelve solo campos útiles para búsqueda y respuesta.
-    Quita 'extras' y basura.
-    """
     return {
         "codigo": valor(p, col_codigo),
         "nombre": valor(p, "nombre"),
@@ -193,6 +213,8 @@ def score_producto(p: dict, q: str) -> float:
     return round(s, 2)
 
 
+# Arranque: descarga el JSON si no existe y carga los datos
+descargar_productos_json()
 cargar_datos()
 
 

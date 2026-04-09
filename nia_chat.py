@@ -4,6 +4,9 @@ from pymongo import MongoClient
 from rapidfuzz import fuzz
 from openai import OpenAI
 import re
+from dotenv import load_dotenv
+import os
+load_dotenv()
 
 app = FastAPI(title="NIA Chat Inteligente V2")
 
@@ -17,7 +20,7 @@ collection = db["products_catalog"]
 # =========================
 # OPENAI
 # =========================
-client_ai = OpenAI(api_key="TU_API_KEY")  # <-- CAMBIA ESTO
+client_ai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # =========================
 # MODELO DE ENTRADA
@@ -231,4 +234,4 @@ def buscar_directo(p: Pregunta):
         "query": q,
         "total": len(resultados),
         "items": resultados
-    }
+    } 

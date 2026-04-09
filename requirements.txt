@@ -1,6 +1,8 @@
 fastapi
 uvicorn
+gunicorn
 pymongo
 rapidfuzz
 openai
 python-dotenv
+azure-storage-blob
