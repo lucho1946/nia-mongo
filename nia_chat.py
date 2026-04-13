@@ -13,7 +13,7 @@ app = FastAPI(title="NIA Chat Inteligente V2")
 # =========================
 # CONEXIÓN A MONGO
 # =========================
-client = MongoClient("mongodb://admin:admin123@localhost:27017/")
+client = MongoClient("mongodb://admin:admin123@localhost:27017/", authSource="admin")
 db = client["nia"]
 collection = db["products_catalog"]
 
