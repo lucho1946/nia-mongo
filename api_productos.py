@@ -78,7 +78,7 @@ def limpiar_producto(p: dict) -> dict:
 
 
 # =========================
-# 🔥 CARGA DE DATOS (CORREGIDA)
+# 🔥 CARGA DE DATOS (NO SE TOCA)
 # =========================
 def cargar_datos_background():
     global productos, col_codigo, claves_disponibles, datos_listos
@@ -88,13 +88,11 @@ def cargar_datos_background():
 
         ruta = Path(ARCHIVO_DATOS)
 
-        # 🔹 1. Intentar cargar local
         if ruta.exists():
             print("Cargando desde archivo local...")
             with open(ruta, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-        # 🔹 2. Si no existe → intentar Azure
         else:
             print("Intentando cargar desde Azure...")
 
@@ -115,7 +113,6 @@ def cargar_datos_background():
                     print(f"Error Azure: {e}")
                     data = []
 
-        # 🔹 3. Procesar datos
         productos_raw = data if isinstance(data, list) else data.get("productos", [])
 
         productos_limpios = []
@@ -138,13 +135,17 @@ def cargar_datos_background():
 
 
 # =========================
-# APP
+# 🚨 CAMBIO CLAVE (SOLUCIÓN)
 # =========================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    hilo = threading.Thread(target=cargar_datos_background, daemon=True)
-    hilo.start()
+    # 🔥 IMPORTANTE:
+    # Antes se ejecutaba la carga de datos aquí
+    # Eso hacía que si fallaba Azure o el JSON → la app se caía
+    # Ahora NO se ejecuta automáticamente
+    print("App iniciando sin carga automática de datos...")
     yield
+
 
 app = FastAPI(title="NIA API", version="5.0.0", lifespan=lifespan)
 
@@ -222,20 +223,16 @@ def resumen():
 @app.get("/producto/{codigo}")
 def get_producto(codigo: str):
     if not datos_listos:
-        return {"mensaje": "Cargando datos, intenta en unos segundos.", "datos_listos": False}
+        return {"mensaje": "Cargando datos...", "datos_listos": False}
     codigo_n = normalizar_texto(codigo)
     resultado = [limpiar_producto(p) for p in productos if normalizar_texto(valor(p, col_codigo)) == codigo_n]
     return {"query": codigo, "total_encontrados": len(resultado), "resultados": resultado}
 
 @app.get("/buscar")
-def buscar(
-    q: str = Query(..., min_length=1),
-    limit: int = Query(default=10, ge=1, le=50)
-):
+def buscar(q: str = Query(..., min_length=1), limit: int = Query(default=10, ge=1, le=50)):
     if not datos_listos:
-        return {"mensaje": "Cargando datos, intenta en unos segundos.", "datos_listos": False}
+        return {"mensaje": "Cargando datos...", "datos_listos": False}
 
-    q = str(q).strip()
     qn = normalizar_texto(q)
 
     if parece_codigo(q):
@@ -254,9 +251,9 @@ def buscar(
     resultados.sort(key=lambda x: x["_score"], reverse=True)
     return {"query": q, "tipo_busqueda": "relevancia", "resultados": resultados[:limit]}
 
+
 @app.post("/recargar")
 def recargar():
     hilo = threading.Thread(target=cargar_datos_background, daemon=True)
     hilo.start()
-    return {"ok": True}
-
+    return {"ok": True, "mensaje": "Recarga iniciada"}
