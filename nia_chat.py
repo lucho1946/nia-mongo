@@ -29,7 +29,7 @@ MONGO_URI = os.getenv("MONGO_CONNECTION_STRING")
 print("🔥 MONGO_URI:", MONGO_URI)
 
 if not MONGO_URI:
-    raise ValueError("Falta MONGO_CONNECTION_STRING en variables de entorno")
+    print("Falta MONGO_CONNECTION_STRING en variables de entorno")
 
 client = MongoClient(MONGO_URI)
 db = client["nia"]
@@ -41,7 +41,7 @@ collection = db["products_catalog"]
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not OPENAI_API_KEY:
-    raise ValueError("Falta OPENAI_API_KEY en variables de entorno")
+    print("Falta OPENAI_API_KEY en variables de entorno")
 
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
 
