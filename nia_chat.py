@@ -10,6 +10,10 @@ import re
 import os
 from dotenv import load_dotenv
 
+#NUEVO LOGGING 
+import logging
+logging.basicConfig(level=logging.ERROR)
+
 # =========================
 # CARGAR VARIABLES DE ENTORNO
 # =========================
@@ -25,10 +29,11 @@ app = FastAPI(title="NIA Chat Inteligente V2")
 # =========================
 MONGO_URI = os.getenv("MONGO_CONNECTION_STRING")
 
-print("🔥 MONGO_URI:", MONGO_URI)
+# 🔥 LOG EN VEZ DE PRINT
+logging.error(f"MONGO_URI: {MONGO_URI}")
 
 if not MONGO_URI:
-    print("Falta MONGO_CONNECTION_STRING en variables de entorno")
+    logging.error("Falta MONGO_CONNECTION_STRING en variables de entorno")
 
 client = MongoClient(MONGO_URI)
 db = client["nia"]
@@ -40,7 +45,7 @@ collection = db["products_catalog"]
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not OPENAI_API_KEY:
-    print("Falta OPENAI_API_KEY en variables de entorno")
+    logging.error("Falta OPENAI_API_KEY en variables de entorno")
 
 client_ai = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -55,12 +60,14 @@ class Pregunta(BaseModel):
 # UTILIDADES DE TEXTO
 # =========================
 def limpiar_texto(texto: str) -> str:
+    """Limpia texto para búsqueda"""
     texto = texto.lower().strip()
     texto = re.sub(r"\s+", " ", texto)
     return texto
 
 
 def extraer_tokens(texto: str) -> list[str]:
+    """Extrae palabras clave"""
     texto = limpiar_texto(texto)
     tokens = re.findall(r"[a-zA-Z0-9\-\.]+", texto)
     tokens = [t for t in tokens if len(t) >= 2]
@@ -71,6 +78,7 @@ def extraer_tokens(texto: str) -> list[str]:
 # SCORING DE PRODUCTOS
 # =========================
 def score_producto(q: str, doc: dict) -> float:
+    """Calcula relevancia del producto"""
     nombre = str(doc.get("nombre", ""))
     descripcion = str(doc.get("descripcion", ""))
     texto_busqueda = str(doc.get("texto_busqueda", ""))
@@ -138,7 +146,11 @@ def buscar_productos(q: str):
         "referencia_limpia": 1,
     }
 
-    candidatos = list(collection.find({"$or": condiciones}, proyeccion))
+    try:
+        candidatos = list(collection.find({"$or": condiciones}, proyeccion))
+    except Exception as e:
+        logging.error(f"Error en MongoDB: {e}")
+        raise e
 
     if not candidatos:
         return []
@@ -179,30 +191,52 @@ def chat(p: Pregunta):
         return {"respuesta": "Debes escribir una consulta."}
 
     try:
-        # 🔥 DEBUG CLAVE
-        try:
-            resultados = buscar_productos(q)
-            print("✅ RESULTADOS OBTENIDOS:", len(resultados))
-        except Exception as e:
-            print("🔥 ERROR EN BUSCAR_PRODUCTOS:", str(e))
-            return {
-                "error": "Error en Mongo",
-                "detalle": str(e)
-            }
+        resultados = buscar_productos(q)
 
         if not resultados:
             return {"respuesta": "No encontré productos relacionados."}
 
-        # 🔥 PRUEBA SIN OPENAI (para aislar problema)
+        contexto = ""
+        for i, r in enumerate(resultados, start=1):
+            contexto += (
+                f"{i}. Nombre: {r.get('nombre')} | "
+                f"Marca: {r.get('marca')} | "
+                f"Categoría: {r.get('categoria')} | "
+                f"Descripción: {r.get('descripcion')} | "
+                f"Referencia: {r.get('referencia_limpia')} | "
+                f"Score: {r.get('score')}\n"
+            )
+
+        prompt = f"""
+Eres un asesor técnico comercial experto en productos industriales.
+
+Consulta del usuario:
+{q}
+
+Productos encontrados:
+{contexto}
+
+Responde recomendando las mejores opciones.
+"""
+
+        response = client_ai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Asesor técnico industrial"},
+                {"role": "user", "content": prompt}
+            ]
+        )
+
         return {
-            "respuesta": "PRUEBA OK SIN OPENAI",
+            "respuesta": response.choices[0].message.content,
             "resultados": resultados
         }
 
     except Exception as e:
-        print("🔥 ERROR GENERAL:", str(e))
+        logging.error(f"Error en /chat: {e}")
         return {
-            "error": str(e)
+            "error": "Error interno",
+            "detalle": str(e)
         }
 
 
