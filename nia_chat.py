@@ -1,27 +1,49 @@
+# =========================
+# IMPORTACIONES
+# =========================
 from fastapi import FastAPI
 from pydantic import BaseModel
 from pymongo import MongoClient
 from rapidfuzz import fuzz
 from openai import OpenAI
 import re
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
+
+# =========================
+# CARGAR VARIABLES DE ENTORNO
+# =========================
 load_dotenv()
 
-
+# =========================
+# APP FASTAPI
+# =========================
 app = FastAPI(title="NIA Chat Inteligente V2")
 
 # =========================
-# CONEXIÓN A MONGO
+# CONEXIÓN A MONGO (AZURE / ATLAS)
 # =========================
-client = MongoClient("mongodb://admin:admin123@localhost:27017/", authSource="admin")
+MONGO_URI = os.getenv("MONGO_CONNECTION_STRING")
+
+# DEBUG CLAVE
+print("🔥 MONGO_URI:", MONGO_URI)
+
+if not MONGO_URI:
+    raise ValueError("Falta MONGO_CONNECTION_STRING en variables de entorno")
+
+client = MongoClient(MONGO_URI)
 db = client["nia"]
 collection = db["products_catalog"]
 
 # =========================
 # OPENAI
 # =========================
-client_ai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+if not OPENAI_API_KEY:
+    raise ValueError("Falta OPENAI_API_KEY en variables de entorno")
+
+client_ai = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
 # MODELO DE ENTRADA
@@ -31,28 +53,34 @@ class Pregunta(BaseModel):
 
 
 # =========================
-# UTILIDADES
+# UTILIDADES DE TEXTO
 # =========================
 def limpiar_texto(texto: str) -> str:
+    """Limpia texto para búsqueda"""
     texto = texto.lower().strip()
     texto = re.sub(r"\s+", " ", texto)
     return texto
 
 
 def extraer_tokens(texto: str) -> list[str]:
+    """Extrae palabras clave"""
     texto = limpiar_texto(texto)
     tokens = re.findall(r"[a-zA-Z0-9\-\.]+", texto)
     tokens = [t for t in tokens if len(t) >= 2]
     return list(dict.fromkeys(tokens))
 
 
+# =========================
+# SCORING DE PRODUCTOS
+# =========================
 def score_producto(q: str, doc: dict) -> float:
-    nombre = str(doc.get("nombre", "") or "")
-    descripcion = str(doc.get("descripcion", "") or "")
-    texto_busqueda = str(doc.get("texto_busqueda", "") or "")
-    referencia = str(doc.get("referencia_limpia", "") or "")
-    marca = str(doc.get("marca", "") or "")
-    categoria = str(doc.get("categoria", "") or "")
+    """Calcula relevancia del producto"""
+    nombre = str(doc.get("nombre", ""))
+    descripcion = str(doc.get("descripcion", ""))
+    texto_busqueda = str(doc.get("texto_busqueda", ""))
+    referencia = str(doc.get("referencia_limpia", ""))
+    marca = str(doc.get("marca", ""))
+    categoria = str(doc.get("categoria", ""))
 
     bloque = " ".join([
         nombre,
@@ -68,13 +96,12 @@ def score_producto(q: str, doc: dict) -> float:
     s3 = fuzz.token_sort_ratio(q, nombre)
     s4 = fuzz.partial_ratio(q, referencia)
 
-    # ponderación
     score_final = (s1 * 0.40) + (s2 * 0.25) + (s3 * 0.20) + (s4 * 0.15)
     return round(score_final, 2)
 
 
 # =========================
-# BÚSQUEDA INTELIGENTE EN MONGO
+# BÚSQUEDA EN MONGO
 # =========================
 def buscar_productos(q: str):
     q_limpia = limpiar_texto(q)
@@ -117,7 +144,6 @@ def buscar_productos(q: str):
         "referencia_limpia": 1,
     }
 
-    # Sin límite fijo pequeño. Mongo trae todos los candidatos que cumplan.
     candidatos = list(collection.find({"$or": condiciones}, proyeccion))
 
     if not candidatos:
@@ -129,10 +155,9 @@ def buscar_productos(q: str):
         doc["score"] = score
         resultados.append(doc)
 
-    # ordenar y tomar los mejores
     resultados = sorted(resultados, key=lambda x: x["score"], reverse=True)
 
-    # quitar duplicados por código o nombre
+    # eliminar duplicados
     unicos = []
     vistos = set()
 
@@ -142,7 +167,6 @@ def buscar_productos(q: str):
             vistos.add(clave)
             unicos.append(r)
 
-    # top final
     return unicos[:8]
 
 
@@ -161,30 +185,26 @@ def chat(p: Pregunta):
     if not q:
         return {"respuesta": "Debes escribir una consulta."}
 
-    resultados = buscar_productos(q)
+    try:
+        resultados = buscar_productos(q)
 
-    if not resultados:
-        return {"respuesta": "No encontré productos relacionados."}
+        if not resultados:
+            return {"respuesta": "No encontré productos relacionados."}
 
-    contexto = ""
-    for i, r in enumerate(resultados, start=1):
-        contexto += (
-            f"{i}. "
-            f"Nombre: {r.get('nombre', 'N/A')} | "
-            f"Marca: {r.get('marca', 'N/A')} | "
-            f"Categoría: {r.get('categoria', 'N/A')} | "
-            f"Descripción: {r.get('descripcion', 'N/A')} | "
-            f"Referencia: {r.get('referencia_limpia', 'N/A')} | "
-            f"Score: {r.get('score', 'N/A')}\n"
-        )
+        # construir contexto
+        contexto = ""
+        for i, r in enumerate(resultados, start=1):
+            contexto += (
+                f"{i}. Nombre: {r.get('nombre')} | "
+                f"Marca: {r.get('marca')} | "
+                f"Categoría: {r.get('categoria')} | "
+                f"Descripción: {r.get('descripcion')} | "
+                f"Referencia: {r.get('referencia_limpia')} | "
+                f"Score: {r.get('score')}\n"
+            )
 
-    prompt = f"""
-Eres un asistente comercial técnico experto en productos industriales.
-
-Tu trabajo es responder usando SOLO los productos encontrados.
-No inventes referencias, marcas, precios, stock o disponibilidad.
-Si hay varias opciones, prioriza las que mejor coincidan con la necesidad del usuario.
-Responde en español claro, útil y profesional.
+        prompt = f"""
+Eres un asesor técnico comercial experto en productos industriales.
 
 Consulta del usuario:
 {q}
@@ -192,21 +212,14 @@ Consulta del usuario:
 Productos encontrados:
 {contexto}
 
-Devuelve una recomendación útil indicando cuáles parecen ser las mejores opciones y por qué.
+Responde recomendando las mejores opciones.
 """
 
-    try:
         response = client_ai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": "Eres un asesor técnico comercial industrial experto en búsqueda de productos."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
+                {"role": "system", "content": "Asesor técnico industrial"},
+                {"role": "user", "content": prompt}
             ]
         )
 
@@ -217,9 +230,8 @@ Devuelve una recomendación útil indicando cuáles parecen ser las mejores opci
 
     except Exception as e:
         return {
-            "respuesta": "Ocurrió un error al consultar OpenAI.",
-            "detalle": str(e),
-            "resultados": resultados
+            "error": "Error interno",
+            "detalle": str(e)
         }
 
 
@@ -231,8 +243,9 @@ def buscar_directo(p: Pregunta):
         return {"items": []}
 
     resultados = buscar_productos(q)
+
     return {
         "query": q,
         "total": len(resultados),
         "items": resultados
-    } 
+    }
