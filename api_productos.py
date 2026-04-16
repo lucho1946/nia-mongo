@@ -13,7 +13,6 @@ from azure.storage.blob import BlobServiceClient
 load_dotenv()
 
 ARCHIVO_DATOS = "productos.json"
-
 POSIBLES_CLAVES_CODIGO = [
     "codigo", "Código", "CODIGO", "código",
     "referencia", "REFERENCIA", "Referencia",
@@ -78,40 +77,23 @@ def limpiar_producto(p: dict) -> dict:
 
 
 # =========================
-# 🔥 CARGA DE DATOS (NO SE TOCA)
+# CARGA DE DATOS EN HILO SEPARADO
 # =========================
 def cargar_datos_background():
     global productos, col_codigo, claves_disponibles, datos_listos
-
     try:
-        print("Intentando cargar datos...")
-
         ruta = Path(ARCHIVO_DATOS)
-
         if ruta.exists():
-            print("Cargando desde archivo local...")
+            print("Cargando desde disco local...")
             with open(ruta, "r", encoding="utf-8") as f:
                 data = json.load(f)
-
         else:
-            print("Intentando cargar desde Azure...")
-
+            print("Descargando desde Azure Storage...")
             conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-
-            if not conn_str:
-                print("No hay conexión a Azure Storage")
-                data = []
-
-            else:
-                try:
-                    client = BlobServiceClient.from_connection_string(conn_str)
-                    blob = client.get_blob_client(container="datos", blob="productos.json")
-                    contenido = blob.download_blob().readall()
-                    data = json.loads(contenido.decode("utf-8"))
-                    print("Datos cargados desde Azure")
-                except Exception as e:
-                    print(f"Error Azure: {e}")
-                    data = []
+            client = BlobServiceClient.from_connection_string(conn_str)
+            blob = client.get_blob_client(container="datos", blob="productos.json")
+            contenido = blob.download_blob().readall()
+            data = json.loads(contenido.decode("utf-8"))
 
         productos_raw = data if isinstance(data, list) else data.get("productos", [])
 
@@ -121,31 +103,19 @@ def cargar_datos_background():
             productos_limpios.append(item)
 
         productos = productos_limpios
-
-        if productos:
-            col_codigo = detectar_clave_codigo(productos)
-            claves_disponibles = list(productos[0].keys())
-
+        col_codigo = detectar_clave_codigo(productos)
+        claves_disponibles = list(productos[0].keys())
         datos_listos = True
-        print(f"Productos cargados: {len(productos)}")
-
+        print(f"✅ {len(productos)} productos cargados.")
     except Exception as e:
-        print(f"ERROR GENERAL: {e}")
-        datos_listos = False
+        print(f"❌ Error cargando datos: {e}")
 
 
-# =========================
-# 🚨 CAMBIO CLAVE (SOLUCIÓN)
-# =========================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 🔥 IMPORTANTE:
-    # Antes se ejecutaba la carga de datos aquí
-    # Eso hacía que si fallaba Azure o el JSON → la app se caía
-    # Ahora NO se ejecuta automáticamente
-    print("App iniciando sin carga automática de datos...")
+    hilo = threading.Thread(target=cargar_datos_background, daemon=True)
+    hilo.start()
     yield
-
 
 app = FastAPI(title="NIA API", version="5.0.0", lifespan=lifespan)
 
@@ -223,22 +193,26 @@ def resumen():
 @app.get("/producto/{codigo}")
 def get_producto(codigo: str):
     if not datos_listos:
-        return {"mensaje": "Cargando datos...", "datos_listos": False}
+        return {"mensaje": "Cargando datos, intenta en unos segundos.", "datos_listos": False}
     codigo_n = normalizar_texto(codigo)
     resultado = [limpiar_producto(p) for p in productos if normalizar_texto(valor(p, col_codigo)) == codigo_n]
     return {"query": codigo, "total_encontrados": len(resultado), "resultados": resultado}
 
 @app.get("/buscar")
-def buscar(q: str = Query(..., min_length=1), limit: int = Query(default=10, ge=1, le=50)):
+def buscar(
+    q: str = Query(..., min_length=1, description="Texto libre o código"),
+    limit: int = Query(default=10, ge=1, le=50)
+):
     if not datos_listos:
-        return {"mensaje": "Cargando datos...", "datos_listos": False}
+        return {"mensaje": "Cargando datos, intenta en unos segundos.", "datos_listos": False}
 
+    q = str(q).strip()
     qn = normalizar_texto(q)
 
     if parece_codigo(q):
         exactos = [limpiar_producto(p) for p in productos if normalizar_texto(valor(p, col_codigo)) == qn]
         if exactos:
-            return {"query": q, "tipo_busqueda": "codigo_exacto", "resultados": exactos[:limit]}
+            return {"query": q, "tipo_busqueda": "codigo_exacto", "total_encontrados": len(exactos), "resultados": exactos[:limit]}
 
     resultados = []
     for p in productos:
@@ -249,11 +223,10 @@ def buscar(q: str = Query(..., min_length=1), limit: int = Query(default=10, ge=
             resultados.append(item)
 
     resultados.sort(key=lambda x: x["_score"], reverse=True)
-    return {"query": q, "tipo_busqueda": "relevancia", "resultados": resultados[:limit]}
-
+    return {"query": q, "tipo_busqueda": "relevancia", "total_encontrados": len(resultados), "resultados": resultados[:limit]}
 
 @app.post("/recargar")
 def recargar():
     hilo = threading.Thread(target=cargar_datos_background, daemon=True)
     hilo.start()
-    return {"ok": True, "mensaje": "Recarga iniciada"}
+    return {"ok": True, "mensaje": "Recarga iniciada en segundo plano."}
