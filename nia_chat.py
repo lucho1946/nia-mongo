@@ -25,7 +25,6 @@ app = FastAPI(title="NIA Chat Inteligente V2")
 # =========================
 MONGO_URI = os.getenv("MONGO_CONNECTION_STRING")
 
-# DEBUG CLAVE
 print("🔥 MONGO_URI:", MONGO_URI)
 
 if not MONGO_URI:
@@ -36,7 +35,7 @@ db = client["nia"]
 collection = db["products_catalog"]
 
 # =========================
-# OPENAI
+# OPENAI (NO SE USA EN ESTA PRUEBA)
 # =========================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -56,14 +55,12 @@ class Pregunta(BaseModel):
 # UTILIDADES DE TEXTO
 # =========================
 def limpiar_texto(texto: str) -> str:
-    """Limpia texto para búsqueda"""
     texto = texto.lower().strip()
     texto = re.sub(r"\s+", " ", texto)
     return texto
 
 
 def extraer_tokens(texto: str) -> list[str]:
-    """Extrae palabras clave"""
     texto = limpiar_texto(texto)
     tokens = re.findall(r"[a-zA-Z0-9\-\.]+", texto)
     tokens = [t for t in tokens if len(t) >= 2]
@@ -74,7 +71,6 @@ def extraer_tokens(texto: str) -> list[str]:
 # SCORING DE PRODUCTOS
 # =========================
 def score_producto(q: str, doc: dict) -> float:
-    """Calcula relevancia del producto"""
     nombre = str(doc.get("nombre", ""))
     descripcion = str(doc.get("descripcion", ""))
     texto_busqueda = str(doc.get("texto_busqueda", ""))
@@ -112,7 +108,6 @@ def buscar_productos(q: str):
 
     condiciones = []
 
-    # búsqueda por frase completa
     condiciones.extend([
         {"nombre": {"$regex": re.escape(q_limpia), "$options": "i"}},
         {"descripcion": {"$regex": re.escape(q_limpia), "$options": "i"}},
@@ -122,7 +117,6 @@ def buscar_productos(q: str):
         {"categoria": {"$regex": re.escape(q_limpia), "$options": "i"}},
     ])
 
-    # búsqueda por tokens
     for token in tokens:
         condiciones.extend([
             {"nombre": {"$regex": re.escape(token), "$options": "i"}},
@@ -157,7 +151,6 @@ def buscar_productos(q: str):
 
     resultados = sorted(resultados, key=lambda x: x["score"], reverse=True)
 
-    # eliminar duplicados
     unicos = []
     vistos = set()
 
@@ -191,47 +184,16 @@ def chat(p: Pregunta):
         if not resultados:
             return {"respuesta": "No encontré productos relacionados."}
 
-        # construir contexto
-        contexto = ""
-        for i, r in enumerate(resultados, start=1):
-            contexto += (
-                f"{i}. Nombre: {r.get('nombre')} | "
-                f"Marca: {r.get('marca')} | "
-                f"Categoría: {r.get('categoria')} | "
-                f"Descripción: {r.get('descripcion')} | "
-                f"Referencia: {r.get('referencia_limpia')} | "
-                f"Score: {r.get('score')}\n"
-            )
-
-        prompt = f"""
-Eres un asesor técnico comercial experto en productos industriales.
-
-Consulta del usuario:
-{q}
-
-Productos encontrados:
-{contexto}
-
-Responde recomendando las mejores opciones.
-"""
-
-        response = client_ai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Asesor técnico industrial"},
-                {"role": "user", "content": prompt}
-            ]
-        )
-
+        # 🔥 PRUEBA SIN OPENAI
         return {
-            "respuesta": response.choices[0].message.content,
+            "respuesta": "PRUEBA OK SIN OPENAI",
             "resultados": resultados
         }
 
     except Exception as e:
+        print("🔥 ERROR REAL:", str(e))
         return {
-            "error": "Error interno",
-            "detalle": str(e)
+            "error": str(e)
         }
 
 
