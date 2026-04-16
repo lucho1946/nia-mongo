@@ -13,6 +13,7 @@ from azure.storage.blob import BlobServiceClient
 load_dotenv()
 
 ARCHIVO_DATOS = "productos.json"
+
 POSIBLES_CLAVES_CODIGO = [
     "codigo", "Código", "CODIGO", "código",
     "referencia", "REFERENCIA", "Referencia",
@@ -77,24 +78,44 @@ def limpiar_producto(p: dict) -> dict:
 
 
 # =========================
-# CARGA DE DATOS EN HILO SEPARADO
+# 🔥 CARGA DE DATOS (CORREGIDA)
 # =========================
 def cargar_datos_background():
     global productos, col_codigo, claves_disponibles, datos_listos
+
     try:
+        print("Intentando cargar datos...")
+
         ruta = Path(ARCHIVO_DATOS)
+
+        # 🔹 1. Intentar cargar local
         if ruta.exists():
-            print("Cargando desde disco local...")
+            print("Cargando desde archivo local...")
             with open(ruta, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        else:
-            print("Descargando desde Azure Storage...")
-            conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-            client = BlobServiceClient.from_connection_string(conn_str)
-            blob = client.get_blob_client(container="datos", blob="productos.json")
-            contenido = blob.download_blob().readall()
-            data = json.loads(contenido.decode("utf-8"))
 
+        # 🔹 2. Si no existe → intentar Azure
+        else:
+            print("Intentando cargar desde Azure...")
+
+            conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+
+            if not conn_str:
+                print("No hay conexión a Azure Storage")
+                data = []
+
+            else:
+                try:
+                    client = BlobServiceClient.from_connection_string(conn_str)
+                    blob = client.get_blob_client(container="datos", blob="productos.json")
+                    contenido = blob.download_blob().readall()
+                    data = json.loads(contenido.decode("utf-8"))
+                    print("Datos cargados desde Azure")
+                except Exception as e:
+                    print(f"Error Azure: {e}")
+                    data = []
+
+        # 🔹 3. Procesar datos
         productos_raw = data if isinstance(data, list) else data.get("productos", [])
 
         productos_limpios = []
@@ -103,14 +124,22 @@ def cargar_datos_background():
             productos_limpios.append(item)
 
         productos = productos_limpios
-        col_codigo = detectar_clave_codigo(productos)
-        claves_disponibles = list(productos[0].keys())
+
+        if productos:
+            col_codigo = detectar_clave_codigo(productos)
+            claves_disponibles = list(productos[0].keys())
+
         datos_listos = True
-        print(f"✅ {len(productos)} productos cargados.")
+        print(f"Productos cargados: {len(productos)}")
+
     except Exception as e:
-        print(f"❌ Error cargando datos: {e}")
+        print(f"ERROR GENERAL: {e}")
+        datos_listos = False
 
 
+# =========================
+# APP
+# =========================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     hilo = threading.Thread(target=cargar_datos_background, daemon=True)
@@ -200,7 +229,7 @@ def get_producto(codigo: str):
 
 @app.get("/buscar")
 def buscar(
-    q: str = Query(..., min_length=1, description="Texto libre o código"),
+    q: str = Query(..., min_length=1),
     limit: int = Query(default=10, ge=1, le=50)
 ):
     if not datos_listos:
@@ -212,7 +241,7 @@ def buscar(
     if parece_codigo(q):
         exactos = [limpiar_producto(p) for p in productos if normalizar_texto(valor(p, col_codigo)) == qn]
         if exactos:
-            return {"query": q, "tipo_busqueda": "codigo_exacto", "total_encontrados": len(exactos), "resultados": exactos[:limit]}
+            return {"query": q, "tipo_busqueda": "codigo_exacto", "resultados": exactos[:limit]}
 
     resultados = []
     for p in productos:
@@ -223,10 +252,11 @@ def buscar(
             resultados.append(item)
 
     resultados.sort(key=lambda x: x["_score"], reverse=True)
-    return {"query": q, "tipo_busqueda": "relevancia", "total_encontrados": len(resultados), "resultados": resultados[:limit]}
+    return {"query": q, "tipo_busqueda": "relevancia", "resultados": resultados[:limit]}
 
 @app.post("/recargar")
 def recargar():
     hilo = threading.Thread(target=cargar_datos_background, daemon=True)
     hilo.start()
-    return {"ok": True, "mensaje": "Recarga iniciada en segundo plano."}
+    return {"ok": True}
+
