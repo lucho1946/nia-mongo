@@ -35,7 +35,7 @@ db = client["nia"]
 collection = db["products_catalog"]
 
 # =========================
-# OPENAI (NO SE USA EN ESTA PRUEBA)
+# OPENAI
 # =========================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -179,19 +179,28 @@ def chat(p: Pregunta):
         return {"respuesta": "Debes escribir una consulta."}
 
     try:
-        resultados = buscar_productos(q)
+        # 🔥 DEBUG CLAVE
+        try:
+            resultados = buscar_productos(q)
+            print("✅ RESULTADOS OBTENIDOS:", len(resultados))
+        except Exception as e:
+            print("🔥 ERROR EN BUSCAR_PRODUCTOS:", str(e))
+            return {
+                "error": "Error en Mongo",
+                "detalle": str(e)
+            }
 
         if not resultados:
             return {"respuesta": "No encontré productos relacionados."}
 
-        # 🔥 PRUEBA SIN OPENAI
+        # 🔥 PRUEBA SIN OPENAI (para aislar problema)
         return {
             "respuesta": "PRUEBA OK SIN OPENAI",
             "resultados": resultados
         }
 
     except Exception as e:
-        print("🔥 ERROR REAL:", str(e))
+        print("🔥 ERROR GENERAL:", str(e))
         return {
             "error": str(e)
         }
