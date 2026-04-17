@@ -8,7 +8,7 @@ from rapidfuzz import fuzz
 from openai import OpenAI
 import re
 import os
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 
 #NUEVO LOGGING 
 import logging
@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.ERROR)
 # =========================
 # CARGAR VARIABLES DE ENTORNO
 # =========================
-load_dotenv()
+# load_dotenv()
 
 # =========================
 # APP FASTAPI
