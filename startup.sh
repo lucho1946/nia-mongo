@@ -1,1 +1,1 @@
-gunicorn -w 4 -k uvicorn.workers.UvicornWorker api_productos:app
+gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app

@@ -29,7 +29,7 @@ app = FastAPI(title="NIA Chat Inteligente V2")
 # =========================
 MONGO_URI = os.getenv("MONGO_CONNECTION_STRING")
 
-# 🔥 LOG EN VEZ DE PRINT
+# LOG EN VEZ DE PRINT
 logging.error(f"MONGO_URI: {MONGO_URI}")
 
 if not MONGO_URI:
