@@ -3,6 +3,12 @@
 # Responsabilidad única: endpoints del catálogo de productos.
 # No contiene lógica de negocio — solo recibe, delega y retorna.
 # Toda la lógica vive en services/search.py y services/mongo.py
+#
+# ACTUALIZACIÓN v0.1:
+# El endpoint /producto/{codigo} fue actualizado para buscar
+# por el campo "CODIGO" (mayúscula) que es el nombre exacto
+# del campo en MongoDB — coincide con el Excel original.
+# Sin este cambio la búsqueda por código exacto no funciona.
 # ============================================================
 
 from fastapi import APIRouter, Query, HTTPException
@@ -59,10 +65,14 @@ def get_producto(codigo: str):
     Usa regex con ^ y $ para anclar inicio y fin — evita que
     'ABC' coincida con 'ABC-123' o '1ABC'.
     Case-insensitive con la opción 'i'.
+
+    Campo actualizado: "CODIGO" (mayúscula) — nombre exacto
+    del campo en MongoDB que coincide con el Excel original.
     """
     try:
         resultados = list(get_collection().find(
-            {"codigo": {"$regex": f"^{codigo}$", "$options": "i"}},
+            # CODIGO en mayúscula — nombre exacto del campo en MongoDB
+            {"CODIGO": {"$regex": f"^{codigo}$", "$options": "i"}},
             {"_id": 0}
         ))
         return {
