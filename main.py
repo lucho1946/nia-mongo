@@ -38,7 +38,7 @@ from routers import productos, chat
 app = FastAPI(
     title="NIA - VIA Industrial",
     description="Asistente comercial inteligente para catálogo industrial",
-    version="2.0.0",
+    version="0.1.0",
 )
 
 # Registrar routers — cada uno aporta sus endpoints a la app.
