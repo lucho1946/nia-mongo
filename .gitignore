@@ -2,6 +2,7 @@
 productos_limpio.json
 productos.json
 nia_base_limpia*
+test_conexion_sql.py
 *.csv
 *.xls
 *.xlsx
