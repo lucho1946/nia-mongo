@@ -127,7 +127,8 @@ SELECT
     -- Control
     PV_FECHA,
     VISIBLE_EN_LINEA,
-    BLOQUEADO
+    BLOQUEADO, 
+    EXISTENCIA
 
 FROM productos_hugo
 WHERE DESCRIPCION_CORTA_PRE IS NOT NULL
@@ -306,6 +307,8 @@ def transformar(row) -> dict:
         # Control
         "PV_FECHA":              row.PV_FECHA.isoformat() if row.PV_FECHA else None,
         "VISIBLE_EN_LINEA":      bool(row.VISIBLE_EN_LINEA),
+        # Tiempo estimado de entrega — campo EXISTENCIA de SQL Server
+        "EXISTENCIA": limpiar(row.EXISTENCIA),
 
         # Campo clave para búsqueda NIA con RapidFuzz
         "texto_busqueda":        texto_busqueda,
