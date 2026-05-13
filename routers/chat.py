@@ -4,6 +4,10 @@
 # Orquesta el flujo completo de NIA — sesiones, decisión IA,
 # búsqueda de productos y generación de respuesta.
 #
+# VERSIÓN 0.3 — Correcciones QA:
+# - Manejo correcto de búsqueda sin resultados
+# - Mensaje honesto cuando no se encuentra producto o código
+#
 # VERSIÓN 0.2 — Motor conversacional con sesiones:
 # - Gestión de sesiones con TTL de 30 minutos
 # - Detección de intención especial (bots, compra, escalación)
@@ -20,8 +24,9 @@
 # 5. Si flujo normal → decidir_accion (preguntar o buscar)
 # 6. Si PREGUNTAR → retorna pregunta técnica al cliente
 # 7. Si BUSCAR → busca en MongoDB con contexto acumulado
-# 8. Genera recomendación con OpenAI + productos reales
-# 9. Guarda respuesta en historial y retorna ChatResponse
+# 8. Si no hay resultados → responde honestamente sin OpenAI
+# 9. Genera recomendación con OpenAI + productos reales
+# 10. Guarda respuesta en historial y retorna ChatResponse
 # ============================================================
 
 from fastapi import APIRouter, HTTPException
@@ -152,34 +157,34 @@ def chat(p: ChatRequest):
         agregar_mensaje(session_id, "assistant", RESPUESTA_BOT)
         actualizar_sesion(session_id, {"estado": "cerrado"})
         return ChatResponse(
-            session_id      = session_id,
-            respuesta       = RESPUESTA_BOT,
-            estado          = "cerrado",
+            session_id       = session_id,
+            respuesta        = RESPUESTA_BOT,
+            estado           = "cerrado",
             preguntas_hechas = preguntas_hechas,
-            productos       = [],
-            requiere_accion = None
+            productos        = [],
+            requiere_accion  = None
         )
 
     if intencion == "escalar_asesor":
         agregar_mensaje(session_id, "assistant", RESPUESTA_ESCALACION)
         return ChatResponse(
-            session_id      = session_id,
-            respuesta       = RESPUESTA_ESCALACION,
-            estado          = "recopilando",
+            session_id       = session_id,
+            respuesta        = RESPUESTA_ESCALACION,
+            estado           = "recopilando",
             preguntas_hechas = preguntas_hechas,
-            productos       = [],
-            requiere_accion = "escalar_asesor"
+            productos        = [],
+            requiere_accion  = "escalar_asesor"
         )
 
     if intencion == "generar_preorden":
         agregar_mensaje(session_id, "assistant", RESPUESTA_PREORDEN)
         return ChatResponse(
-            session_id      = session_id,
-            respuesta       = RESPUESTA_PREORDEN,
-            estado          = "recopilando",
+            session_id       = session_id,
+            respuesta        = RESPUESTA_PREORDEN,
+            estado           = "recopilando",
             preguntas_hechas = preguntas_hechas,
-            productos       = [],
-            requiere_accion = "generar_preorden"
+            productos        = [],
+            requiere_accion  = "generar_preorden"
         )
 
     # -------------------------------------------------------
@@ -227,7 +232,28 @@ def chat(p: ChatRequest):
         )
 
     # -------------------------------------------------------
-    # PASO 6: Construir contexto y generar recomendación
+    # PASO 6: Verificar resultados
+    # Si no hay productos NIA responde honestamente
+    # sin llamar a OpenAI — ahorra tokens
+    # -------------------------------------------------------
+    if not resultados:
+        respuesta_no_encontrado = (
+            "No encontré productos en el catálogo que coincidan con su búsqueda. "
+            "¿Puede verificar el código o darme más detalles sobre lo que necesita? "
+            "Por ejemplo: nombre del producto, marca o aplicación."
+        )
+        agregar_mensaje(session_id, "assistant", respuesta_no_encontrado)
+        return ChatResponse(
+            session_id       = session_id,
+            respuesta        = respuesta_no_encontrado,
+            estado           = "completado",
+            preguntas_hechas = preguntas_hechas,
+            productos        = [],
+            requiere_accion  = None
+        )
+
+    # -------------------------------------------------------
+    # PASO 7: Construir contexto y generar recomendación
     # -------------------------------------------------------
     contexto_productos = construir_contexto_productos(resultados)
 
@@ -241,7 +267,7 @@ def chat(p: ChatRequest):
         )
 
     # -------------------------------------------------------
-    # PASO 7: Guardar respuesta y actualizar estado sesión
+    # PASO 8: Guardar respuesta y actualizar estado sesión
     # -------------------------------------------------------
     agregar_mensaje(session_id, "assistant", respuesta_texto)
     actualizar_sesion(session_id, {"estado": "completado"})

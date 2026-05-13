@@ -4,6 +4,13 @@
 # Tanto el router de productos como el de chat usan este mismo
 # servicio — una sola fuente de verdad para buscar.
 #
+# VERSIÓN: 0.3
+# CAMBIOS v0.3:
+# - Detección de código VIA exacto (P123456, 123456)
+# - buscar_por_codigo_exacto() con búsqueda directa por índice
+# - Fallback a búsqueda normal si código no existe
+# - EXISTENCIA agregado a proyecciones
+#
 # VERSIÓN: 0.2
 # CAMBIOS v0.2:
 # - Regla de negocio PV_FECHA: precio vigente solo si < 12 meses
@@ -25,12 +32,14 @@
 #   STOCK_BOG, STOCK_CALI, STOCK_TOTAL
 #   EQUIVALENTE, EQUIVALENTE_2
 #   DIMENSION, PESO, VISIBLE_EN_LINEA
+#   EXISTENCIA (tiempo estimado de entrega)
 #   texto_busqueda (campo unificado construido por ETL)
 #   score_oportunidad, tipo_sku (cuando llegue Excel de Don Andrés)
 #
 # REGLAS DE NEGOCIO:
 # - Precio condicionado a PV_FECHA ≤ 12 meses (Andrés Valencia)
-# - Solo productos con VISIBLE_EN_LINEA activo
+# - Solo productos con VISIBLE_EN_LINEA activo en búsqueda normal
+# - Búsqueda por código exacto ignora VISIBLE_EN_LINEA
 # - Jerarquía completa en respuesta para frontend y NIA
 # - Stock real por sede para informar disponibilidad al cliente
 # ============================================================
@@ -43,6 +52,45 @@ from rapidfuzz import fuzz
 from .mongo import get_collection
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# PROYECCIÓN ESTÁNDAR
+# Centralizada aquí para que buscar_productos y
+# buscar_por_codigo_exacto usen exactamente los mismos campos.
+# Si se agrega un campo nuevo solo se cambia aquí.
+# ============================================================
+
+PROYECCION_PRODUCTO = {
+    "_id":                   0,
+    "CODIGO":                1,
+    "REFERENCIA":            1,
+    "REF_ALTERNATIVA":       1,
+    "MARCA_LET":             1,
+    "DESCRIPCION_CORTA_PRE": 1,
+    "DESCRIPCION_LARGA_PRE": 1,
+    "PRECIO_VENTA":          1,
+    "PV_FECHA":              1,
+    "NIVEL_0":               1,
+    "NIVEL_1":               1,
+    "NIVEL_2":               1,
+    "NIVEL_3":               1,
+    "NIVEL_4":               1,
+    "CARACTERISTICAS":       1,
+    "APLICACIONES":          1,
+    "STOCK_BOG":             1,
+    "STOCK_CALI":            1,
+    "STOCK_TOTAL":           1,
+    "EQUIVALENTE":           1,
+    "EQUIVALENTE_2":         1,
+    "DIMENSION":             1,
+    "PESO":                  1,
+    "VISIBLE_EN_LINEA":      1,
+    "EXISTENCIA":            1,
+    "texto_busqueda":        1,
+    "score_oportunidad":     1,
+    "tipo_sku":              1,
+}
 
 
 # ============================================================
@@ -74,6 +122,66 @@ def extraer_tokens(texto: str) -> list[str]:
     """
     tokens = re.findall(r"[a-zA-Z0-9\-\.\/]+", normalizar(texto))
     return list(dict.fromkeys(t for t in tokens if len(t) >= 2))
+
+
+# ============================================================
+# DETECCIÓN DE CÓDIGO VIA
+# ============================================================
+
+def es_codigo_via(texto: str) -> bool:
+    """
+    Detecta si el texto parece un código de producto de VIA Industrial.
+
+    Formatos válidos identificados en el catálogo real:
+    - P123456     → P mayúscula + números (más común)
+    - P123456A    → P + números + letras
+    - 123456      → solo números de 6+ dígitos
+
+    Esta detección permite que /chat busque por código exacto
+    cuando el cliente escribe una referencia directa, en lugar
+    de hacer búsqueda fuzzy que puede traer resultados incorrectos.
+
+    NO detecta referencias como '22UN73' o 'CUT-C20' — esas
+    se manejan correctamente con RapidFuzz en búsqueda normal.
+    """
+    texto = texto.strip()
+
+    # Formato P + alfanumérico (ej: P123456, P123456A)
+    if re.match(r'^P[0-9]{4,}[A-Za-z0-9]*$', texto, re.IGNORECASE):
+        return True
+
+    # Solo números de 6 o más dígitos (ej: 123456)
+    if re.match(r'^\d{6,}$', texto):
+        return True
+
+    return False
+
+
+# ============================================================
+# BÚSQUEDA POR CÓDIGO EXACTO
+# ============================================================
+
+def buscar_por_codigo_exacto(codigo: str) -> list[dict]:
+    """
+    Búsqueda exacta por código de producto usando el índice CODIGO.
+    Más rápida y precisa que RapidFuzz para códigos conocidos.
+
+    NO filtra por VISIBLE_EN_LINEA — si el cliente o asesor
+    escribe un código exacto, sabe lo que busca. Filtrar productos
+    no visibles aquí podría confundir: el producto existe pero
+    NIA dice que no lo encuentra.
+
+    Retorna máximo 5 resultados para evitar duplicados en MongoDB.
+    """
+    try:
+        resultados = list(get_collection().find(
+            {"CODIGO": {"$regex": f"^{re.escape(codigo)}$", "$options": "i"}},
+            PROYECCION_PRODUCTO
+        ).limit(5))
+        return resultados
+    except Exception as e:
+        logger.error(f"Error en buscar_por_codigo_exacto: {e}")
+        return []
 
 
 # ============================================================
@@ -110,7 +218,6 @@ def score_relevancia(q: str, doc: dict) -> float:
     s1 = fuzz.token_set_ratio(qn, texto_busqueda)
     s2 = fuzz.partial_ratio(qn, texto_busqueda)
     s3 = fuzz.token_sort_ratio(qn, nombre)
-    # Toma el mejor score entre referencia principal y alternativa
     s4 = max(
         fuzz.partial_ratio(qn, referencia),
         fuzz.partial_ratio(qn, ref_alt)
@@ -141,20 +248,17 @@ def buscar_productos(q: str, limit: int = 8) -> list[dict]:
     Función principal de búsqueda. Recibe texto libre del usuario
     y retorna lista de productos ordenados por relevancia.
 
-    ESTRATEGIA EN DOS FASES:
-    1. MongoDB filtra candidatos con regex — rápido, reduce de 287k a
-       un conjunto manejable usando los índices disponibles
-    2. RapidFuzz re-rankea los candidatos — preciso pero costoso,
-       por eso se aplica solo al conjunto filtrado, no a toda la colección
+    DETECCIÓN DE CÓDIGO EXACTO:
+    Si el texto parece un código VIA (P123456, 123456) busca
+    directamente por código exacto usando el índice CODIGO.
+    Si no encuentra → fallback a búsqueda normal.
+
+    ESTRATEGIA EN DOS FASES (búsqueda normal):
+    1. MongoDB filtra candidatos con regex — rápido
+    2. RapidFuzz re-rankea — preciso
 
     FILTROS ACTIVOS:
     - VISIBLE_EN_LINEA: solo productos visibles al cliente
-      (robusto para booleano, entero 0/1 y string)
-
-    CAMPOS DE BÚSQUEDA:
-    Incluye texto_busqueda como campo principal (concentra toda
-    la información del producto) más campos individuales para
-    mayor cobertura en búsquedas específicas.
     """
     q_limpia = normalizar(q)
     tokens   = extraer_tokens(q_limpia)
@@ -162,7 +266,20 @@ def buscar_productos(q: str, limit: int = 8) -> list[dict]:
     if not tokens:
         return []
 
-    # --- FASE 1: Filtro en MongoDB ---
+    # -------------------------------------------------------
+    # Detección de código exacto — búsqueda directa por índice
+    # -------------------------------------------------------
+    if es_codigo_via(q.strip()):
+        logger.info(f"Código VIA detectado: {q.strip()} — búsqueda exacta")
+        resultados_codigo = buscar_por_codigo_exacto(q.strip())
+        if resultados_codigo:
+            return resultados_codigo
+        # Código no encontrado — continuar con búsqueda normal
+        logger.info("Código no encontrado — fallback a búsqueda normal")
+
+    # -------------------------------------------------------
+    # FASE 1: Filtro en MongoDB con regex
+    # -------------------------------------------------------
     condiciones_busqueda = []
 
     # Campos donde buscar — texto_busqueda primero por ser el más completo
@@ -197,41 +314,8 @@ def buscar_productos(q: str, limit: int = 8) -> list[dict]:
             })
 
     # Filtro VISIBLE_EN_LINEA robusto — acepta True, 1, "1", "true"
-    # porque MongoDB puede tener el campo en diferentes formatos
     filtro_visible = {
         "VISIBLE_EN_LINEA": {"$in": [True, 1, "1", "true", "True"]}
-    }
-
-    # Proyección — todos los campos que NIA necesita
-    proyeccion = {
-        "_id":                   0,
-        "CODIGO":                1,
-        "REFERENCIA":            1,
-        "REF_ALTERNATIVA":       1,
-        "MARCA_LET":             1,
-        "DESCRIPCION_CORTA_PRE": 1,
-        "DESCRIPCION_LARGA_PRE": 1,
-        "PRECIO_VENTA":          1,
-        "PV_FECHA":              1,
-        "NIVEL_0":               1,
-        "NIVEL_1":               1,
-        "NIVEL_2":               1,
-        "NIVEL_3":               1,
-        "NIVEL_4":               1,
-        "CARACTERISTICAS":       1,
-        "APLICACIONES":          1,
-        "STOCK_BOG":             1,
-        "STOCK_CALI":            1,
-        "STOCK_TOTAL":           1,
-        "EQUIVALENTE":           1,
-        "EQUIVALENTE_2":         1,
-        "DIMENSION":             1,
-        "PESO":                  1,
-        "VISIBLE_EN_LINEA":      1,
-        "texto_busqueda":        1,
-        "score_oportunidad":     1,
-        "tipo_sku":              1,
-        "EXISTENCIA": 1,
     }
 
     try:
@@ -242,7 +326,7 @@ def buscar_productos(q: str, limit: int = 8) -> list[dict]:
                     filtro_visible
                 ]
             },
-            proyeccion
+            PROYECCION_PRODUCTO
         ))
     except Exception as e:
         logger.error(f"Error MongoDB en buscar_productos: {e}")
@@ -251,8 +335,10 @@ def buscar_productos(q: str, limit: int = 8) -> list[dict]:
     if not candidatos:
         return []
 
-    # --- FASE 2: Re-ranking con RapidFuzz + score_oportunidad ---
-    # Calculamos el score una sola vez por documento para no duplicar cómputo
+    # -------------------------------------------------------
+    # FASE 2: Re-ranking con RapidFuzz + score_oportunidad
+    # Calculamos el score una sola vez por documento
+    # -------------------------------------------------------
     scored = [
         (doc, score_relevancia(q, doc))
         for doc in candidatos
@@ -292,17 +378,20 @@ def formatear_producto(p: dict) -> dict:
     Se informa por Bogotá y Cali por separado.
     Si no hay stock en ninguna sede → "Consultar disponibilidad".
 
+    TIEMPO DE ENTREGA:
+    Viene del campo EXISTENCIA de SQL Server.
+    Texto libre: "1 DIAS", "15 DIAS", "5 SEMANAS".
+    Se muestra tal como viene de la base de datos.
+
     JERARQUÍA — 4 niveles completos:
     Permite al frontend mostrar la ubicación exacta del producto
     en el catálogo de VIA Industrial.
 
     CARACTERÍSTICAS TÉCNICAS:
-    Array de pares título/valor para que NIA pueda responder
-    preguntas técnicas específicas del cliente.
+    Array de pares título/valor para preguntas técnicas de NIA.
 
     EQUIVALENTES:
-    Referencias alternativas para que NIA ofrezca opciones
-    cuando el producto principal no está disponible.
+    Referencias alternativas cuando el producto no tiene stock.
     """
 
     # -------------------------------------------------------
@@ -314,13 +403,11 @@ def formatear_producto(p: dict) -> dict:
 
     if precio_raw and pv_fecha:
         try:
-            # PV_FECHA viene como string ISO desde MongoDB
             if isinstance(pv_fecha, str):
                 fecha_precio = datetime.fromisoformat(pv_fecha)
             else:
                 fecha_precio = pv_fecha
 
-            # Asegurar timezone UTC para comparar correctamente
             if fecha_precio.tzinfo is None:
                 fecha_precio = fecha_precio.replace(tzinfo=timezone.utc)
 
@@ -329,10 +416,9 @@ def formatear_producto(p: dict) -> dict:
 
             if fecha_precio >= hace_12_meses:
                 precio_fmt = f"${float(precio_raw):,.0f} COP"
-            # else: se mantiene "Consultarnos"
 
         except (ValueError, TypeError):
-            pass  # Se mantiene "Consultarnos"
+            pass
 
     # -------------------------------------------------------
     # 2. Calcular disponibilidad de stock por sede
@@ -380,8 +466,7 @@ def formatear_producto(p: dict) -> dict:
         "descripcion": str(p.get("DESCRIPCION_LARGA_PRE", "")).strip()[:300],
         "marca":       str(p.get("MARCA_LET",             "")).strip(),
 
-        # Jerarquía completa de categorías VIA Industrial
-        # Categoría → Línea → Sublínea → Producto
+        # Jerarquía completa VIA Industrial
         "nivel_0": str(p.get("NIVEL_0", "")).strip(),
         "nivel_1": str(p.get("NIVEL_1", "")).strip(),
         "nivel_2": str(p.get("NIVEL_2", "")).strip(),
@@ -389,28 +474,23 @@ def formatear_producto(p: dict) -> dict:
         "nivel_4": str(p.get("NIVEL_4", "")).strip(),
 
         # Comercial
-        "precio":         precio_fmt,
-        "disponibilidad": disponibilidad,
-        # Campo EXISTENCIA de SQL Server — tiempo estimado de entrega
-        "tiempo_entrega": str(p.get("EXISTENCIA", "")).strip(),
+        "precio":          precio_fmt,
+        "disponibilidad":  disponibilidad,
+        "tiempo_entrega":  str(p.get("EXISTENCIA", "")).strip(),
 
-        # Características técnicas estructuradas
-        # Ejemplo: [{"titulo": "Voltaje", "valor": "220V"}]
+        # Técnico
         "caracteristicas": caracteristicas,
+        "aplicaciones":    str(p.get("APLICACIONES", "")).strip(),
 
-        # Aplicaciones del producto
-        "aplicaciones": str(p.get("APLICACIONES", "")).strip(),
-
-        # Equivalentes para ofrecer alternativas al cliente
+        # Equivalentes
         "equivalente":   str(p.get("EQUIVALENTE",   "")).strip(),
         "equivalente_2": str(p.get("EQUIVALENTE_2", "")).strip(),
 
         # Físico
         "dimension": str(p.get("DIMENSION", "")).strip(),
-        "peso":       float(p.get("PESO") or 0) if p.get("PESO") else None,
+        "peso":      float(p.get("PESO") or 0) if p.get("PESO") else None,
 
-        # Score comercial de VIA Industrial
-        # Disponible cuando Don Andrés comparta el Excel del scoring
+        # Score comercial — activo cuando llegue Excel de Don Andrés
         "score_oportunidad": score_op,
         "tipo_sku":          str(p.get("tipo_sku", "")).strip(),
     }
