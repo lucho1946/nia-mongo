@@ -4,6 +4,12 @@
 # Tanto el router de productos como el de chat usan este mismo
 # servicio — una sola fuente de verdad para buscar.
 #
+# VERSIÓN: 0.4
+# CAMBIOS v0.4:
+# - Umbral mínimo de relevancia (UMBRAL_MINIMO = 45.0)
+# - Filtra resultados irrelevantes después de RapidFuzz
+# - Evita que búsquedas multimodales devuelvan productos no relacionados
+#
 # VERSIÓN: 0.3
 # CAMBIOS v0.3:
 # - Detección de código VIA exacto (P123456, 123456)
@@ -91,6 +97,22 @@ PROYECCION_PRODUCTO = {
     "score_oportunidad":     1,
     "tipo_sku":              1,
 }
+
+
+# ============================================================
+# UMBRAL MÍNIMO DE RELEVANCIA
+# Un score < 45 indica que el producto no tiene relación real
+# con la búsqueda. Sin este filtro RapidFuzz acepta cualquier
+# cosa que pase el regex de MongoDB, generando resultados
+# irrelevantes especialmente en búsquedas multimodales.
+#
+# Valor calibrado empíricamente:
+# - < 45: producto irrelevante (medidores cuando se busca compresor)
+# - 45-65: coincidencia parcial aceptable
+# - > 65: coincidencia fuerte
+# - > 85: coincidencia muy precisa (código o referencia exacta)
+# ============================================================
+UMBRAL_MINIMO = 55.0
 
 
 # ============================================================
@@ -259,6 +281,7 @@ def buscar_productos(q: str, limit: int = 8) -> list[dict]:
 
     FILTROS ACTIVOS:
     - VISIBLE_EN_LINEA: solo productos visibles al cliente
+    - UMBRAL_MINIMO: descarta productos con score < 45
     """
     q_limpia = normalizar(q)
     tokens   = extraer_tokens(q_limpia)
@@ -344,6 +367,19 @@ def buscar_productos(q: str, limit: int = 8) -> list[dict]:
         for doc in candidatos
     ]
     scored.sort(key=lambda x: x[1], reverse=True)
+
+    # -------------------------------------------------------
+    # FILTRO DE UMBRAL MÍNIMO
+    # Descarta productos con score bajo que pasaron el regex
+    # pero no tienen relación real con la búsqueda.
+    # Crítico para búsquedas multimodales donde el query
+    # puede ser muy específico (marca + modelo + referencia).
+    # -------------------------------------------------------
+    scored = [(doc, score) for doc, score in scored if score >= UMBRAL_MINIMO]
+
+    if not scored:
+        logger.info(f"Sin resultados por encima del umbral {UMBRAL_MINIMO} para: {q}")
+        return []
 
     # Eliminar duplicados manteniendo el de mayor score
     vistos     = set()

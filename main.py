@@ -29,7 +29,7 @@ logging.basicConfig(
 # Si se importan antes del load_dotenv(), en local no encuentran
 # las credenciales y fallan.
 # ============================================================
-from routers import productos, chat
+from routers import productos, chat, uploads
 from fastapi.middleware.cors import CORSMiddleware
 
 # ============================================================
@@ -53,6 +53,7 @@ app.add_middleware(
 # Registrar routers — cada uno aporta sus endpoints a la app.
 app.include_router(productos.router)
 app.include_router(chat.router)
+app.include_router(uploads.router)
 
 
 @app.get("/", include_in_schema=False)
