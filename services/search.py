@@ -112,7 +112,7 @@ PROYECCION_PRODUCTO = {
 # - > 65: coincidencia fuerte
 # - > 85: coincidencia muy precisa (código o referencia exacta)
 # ============================================================
-UMBRAL_MINIMO = 55.0
+UMBRAL_MINIMO = 60.0
 
 
 # ============================================================

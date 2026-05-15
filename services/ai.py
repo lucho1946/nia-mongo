@@ -2,6 +2,10 @@
 # services/ai.py
 # Responsabilidad única: toda la lógica de inteligencia de NIA.
 #
+# VERSIÓN 0.3:
+# - PROMPT_DECISION actualizado con reglas para saludos
+# - Manejo de mensajes sin relación con productos industriales
+#
 # VERSIÓN 0.2:
 # - Cliente OpenAI reutilizable con patrón lazy
 # - SYSTEM_PROMPT cargado desde archivo externo
@@ -52,7 +56,7 @@ logger = logging.getLogger(__name__)
 #
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR    = Path(__file__).resolve().parent.parent
 PROMPT_PATH = BASE_DIR / "prompts" / "prompt_maestro_nia.txt"
 
 
@@ -112,6 +116,11 @@ def get_ai_client() -> OpenAI:
 # PROMPT DE DECISIÓN
 # Le dice a la IA cuándo preguntar y cuándo buscar.
 # Temperature muy baja (0.1) para decisiones consistentes.
+#
+# VERSIÓN 0.3 — Cambios:
+# - Regla explícita para saludos → PREGUNTAR con bienvenida
+# - Regla para mensajes sin relación con productos → PREGUNTAR
+# - Evita que NIA busque productos cuando el cliente saluda
 # ============================================================
 
 PROMPT_DECISION = """Eres NIA, asesora comercial de VIA Industrial.
@@ -136,6 +145,8 @@ ACCION: BUSCAR
 QUERY: [términos de búsqueda aquí]
 
 REGLAS CRÍTICAS:
+- Si el mensaje es un saludo ("hola", "buenos días", "buenas", "hey", "buen día", "buenas tardes", "buenas noches", etc.) SIEMPRE elige PREGUNTAR y responde con: "Hola, soy NIA, asesora comercial de VIA Industrial. ¿En qué producto puedo ayudarte hoy?"
+- Si el mensaje no tiene ninguna relación con productos industriales SIEMPRE elige PREGUNTAR preguntando en qué puede ayudar
 - Máximo 3 preguntas en toda la conversación — si ya hiciste 3 SIEMPRE elige BUSCAR
 - Si el cliente da una referencia o código exacto SIEMPRE elige BUSCAR inmediatamente
 - Si el cliente dice que no sabe o no tiene más datos SIEMPRE elige BUSCAR
@@ -165,6 +176,18 @@ def detectar_intencion_especial(mensaje: str) -> str | None:
     """
     mensaje_lower = mensaje.lower().strip()
 
+    # Saludos — detectados antes que todo
+    # Evita que NIA busque productos cuando el cliente saluda
+    keywords_saludo = [
+        "hola", "buenos días", "buenos dias", "buenas tardes",
+        "buenas noches", "buenas", "hey", "buen día", "buen dia",
+        "hi", "hello", "good morning", "hola, buenos dias", "hola, buen día", "hola, buenas tardes", "hola, buenas noches"
+    ]
+
+    for kw in keywords_saludo:
+        if mensaje_lower == kw or mensaje_lower.startswith(kw + " ") or mensaje_lower.startswith(kw + ","):
+            return "saludo"
+        
     # Vendedores externos, competidores o bots
     # Detectados primero — tienen prioridad sobre todo lo demás
     keywords_bot = [

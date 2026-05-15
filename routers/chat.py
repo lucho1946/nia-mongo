@@ -310,6 +310,18 @@ def chat(p: ChatRequest):
     # PASO 3: Detectar intención especial
     # -------------------------------------------------------
     intencion = detectar_intencion_especial(mensaje)
+    
+    if intencion == "saludo":
+        respuesta_saludo = "Hola, soy NIA, asesora comercial de VIA Industrial. ¿En qué producto puedo ayudarte hoy?"
+        agregar_mensaje(session_id, "assistant", respuesta_saludo)
+        return ChatResponse(
+            session_id       = session_id,
+            respuesta        = respuesta_saludo,
+            estado           = "recopilando",
+            preguntas_hechas = preguntas_hechas,
+            productos        = [],
+            requiere_accion  = None
+        )
 
     if intencion == "bot_detectado":
         agregar_mensaje(session_id, "assistant", RESPUESTA_BOT)
