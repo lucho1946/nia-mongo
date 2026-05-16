@@ -265,7 +265,7 @@ def score_relevancia(q: str, doc: dict) -> float:
 # BÚSQUEDA PRINCIPAL
 # ============================================================
 
-def buscar_productos(q: str, limit: int = 8) -> list[dict]:
+def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
     """
     Función principal de búsqueda. Recibe texto libre del usuario
     y retorna lista de productos ordenados por relevancia.
@@ -283,7 +283,7 @@ def buscar_productos(q: str, limit: int = 8) -> list[dict]:
     - VISIBLE_EN_LINEA: solo productos visibles al cliente
     - UMBRAL_MINIMO: descarta productos con score < 45
     """
-    q_limpia = normalizar(q)
+    q_limpia = normalizar(mensaje)
     tokens   = extraer_tokens(q_limpia)
 
     if not tokens:
@@ -292,9 +292,9 @@ def buscar_productos(q: str, limit: int = 8) -> list[dict]:
     # -------------------------------------------------------
     # Detección de código exacto — búsqueda directa por índice
     # -------------------------------------------------------
-    if es_codigo_via(q.strip()):
-        logger.info(f"Código VIA detectado: {q.strip()} — búsqueda exacta")
-        resultados_codigo = buscar_por_codigo_exacto(q.strip())
+    if es_codigo_via(mensaje.strip()):
+        logger.info(f"Código VIA detectado: {mensaje.strip()} — búsqueda exacta")
+        resultados_codigo = buscar_por_codigo_exacto(mensaje.strip())
         if resultados_codigo:
             return resultados_codigo
         # Código no encontrado — continuar con búsqueda normal
@@ -363,7 +363,7 @@ def buscar_productos(q: str, limit: int = 8) -> list[dict]:
     # Calculamos el score una sola vez por documento
     # -------------------------------------------------------
     scored = [
-        (doc, score_relevancia(q, doc))
+        (doc, score_relevancia(mensaje, doc))
         for doc in candidatos
     ]
     scored.sort(key=lambda x: x[1], reverse=True)
@@ -378,7 +378,7 @@ def buscar_productos(q: str, limit: int = 8) -> list[dict]:
     scored = [(doc, score) for doc, score in scored if score >= UMBRAL_MINIMO]
 
     if not scored:
-        logger.info(f"Sin resultados por encima del umbral {UMBRAL_MINIMO} para: {q}")
+        logger.info(f"Sin resultados por encima del umbral {UMBRAL_MINIMO} para: {mensaje}")
         return []
 
     # Eliminar duplicados manteniendo el de mayor score

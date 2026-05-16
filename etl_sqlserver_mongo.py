@@ -11,7 +11,15 @@ QUÉ HACE ESTE SCRIPT:
 2. Extrae los campos útiles de la tabla productos_hugo
 3. Transforma y limpia los datos
 4. Sincroniza con MongoDB Atlas usando upsert por CODIGO
-5. Nunca duplica, nunca borra, solo actualiza o inserta
+5. Actualiza inventario real desde tabla inventario
+6. Nunca duplica, nunca borra, solo actualiza o inserta
+
+MEJORAS v2.0:
+✅ Lectura SQL por lotes (fetchmany 1000 filas)
+✅ Evita timeout TCP en conexiones largas
+✅ Manejo robusto de errores por fila
+✅ Limpieza de stock viejo al final del ETL inventario
+✅ Logs detallados por lote
 
 REGLAS:
 - Solo lectura en SQL Server — no modifica nada de VIA
@@ -29,12 +37,16 @@ import pyodbc
 from dotenv import load_dotenv
 from pymongo import MongoClient, UpdateOne
 
-# Carga variables de entorno desde .env
+# ============================================================
+# CARGAR VARIABLES DE ENTORNO
+# ============================================================
+# En local lee desde .env
+# En Azure las variables ya están configuradas en App Settings
 load_dotenv()
 
-# =========================
+# ============================================================
 # LOGGING
-# =========================
+# ============================================================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
@@ -42,36 +54,40 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# =========================
+# ============================================================
 # CONFIGURACIÓN
-# =========================
+# ============================================================
 
-# SQL Server de VIA Industrial
+# SQL Server de VIA Industrial — solo lectura
 SQL_CONFIG = {
-    "server": "144.217.93.12",                  # Servidor VIA Industrial
-    "database": "productos",                    # Base de datos
-    "username": "productosSoloLectura",         # Usuario solo lectura
-    "password": os.getenv("SQL_PASSWORD", ""),  # Contraseña desde .env
-    "driver": "ODBC Driver 18 for SQL Server"   # Driver instalado localmente
+    "server":   "144.217.93.12",
+    "database": "productos",
+    "username": "productosSoloLectura",
+    "password": os.getenv("SQL_PASSWORD", ""),
+    "driver":   "ODBC Driver 18 for SQL Server"
 }
 
-# MongoDB Atlas — cuenta empresarial
-MONGO_URI = os.getenv("MONGO_CONNECTION_STRING")  # URI desde .env
-MONGO_DB = "nia"                                  # Base de datos NIA
-MONGO_COL = "products_catalog"                    # Colección de productos
+# MongoDB Atlas — cuenta empresarial de VIA
+MONGO_URI = os.getenv("MONGO_CONNECTION_STRING")
+MONGO_DB  = "nia"
+MONGO_COL = "products_catalog"
 
-# Tamaño del batch — cuántos productos se envían a MongoDB de golpe
-# 500 es seguro para el plan gratuito de Atlas y sigue siendo eficiente
-BATCH_SIZE = 500
+# Cuántas filas se leen desde SQL por iteración
+# 1000 es seguro para evitar timeout TCP sin saturar memoria
+SQL_FETCH_SIZE = 1000
+
+# Cuántas operaciones se envían juntas a MongoDB
+# 500 es seguro para el plan gratuito de Atlas
+MONGO_BATCH_SIZE = 500
 
 
-# =========================
-# QUERY SQL
-# =========================
+# ============================================================
+# QUERY PRINCIPAL — PRODUCTOS
+# ============================================================
 # De las 439 columnas de productos_hugo solo traemos las útiles para NIA
-# Filtramos:
-#   - BLOQUEADO = 'NO'          → productos bloqueados no deben aparecer
-#   - DESCRIPCION_CORTA_PRE     → sin descripción el producto no sirve para NIA
+# Filtros:
+#   BLOQUEADO = 'NO'         → productos bloqueados no deben aparecer
+#   DESCRIPCION_CORTA_PRE    → sin descripción el producto no sirve para NIA
 
 QUERY = """
 SELECT
@@ -80,7 +96,7 @@ SELECT
     REFERENCIA,
     REF_ALTERNATIVA,
 
-    -- Descripción (campos confiables al 100%)
+    -- Descripción
     DESCRIPCION_CORTA_PRE,
     DESCRIPCION_LARGA_PRE,
 
@@ -137,14 +153,30 @@ WHERE DESCRIPCION_CORTA_PRE IS NOT NULL
 """
 
 
-# =========================
+# ============================================================
+# QUERY INVENTARIO
+# ============================================================
+# Solo trae productos con stock positivo
+# Si un producto no aparece aquí, su stock es 0
+
+QUERY_INVENTARIO = """
+SELECT
+    INVENTARIO_CODIGO,
+    INVENTARIO,
+    INVENTARIO_FECHA
+FROM inventario
+WHERE INVENTARIO > 0
+"""
+
+
+# ============================================================
 # CONEXIÓN SQL SERVER
-# =========================
+# ============================================================
+
 def conectar_sql():
     """
     Establece conexión con el SQL Server de VIA Industrial.
     Usa el usuario de solo lectura — no puede modificar nada.
-
     TrustServerCertificate=yes es necesario porque el servidor
     de VIA no tiene certificado SSL configurado.
     """
@@ -159,12 +191,13 @@ def conectar_sql():
         f"PWD={SQL_CONFIG['password']};"
         f"TrustServerCertificate=yes;"
     )
-    return pyodbc.connect(conn_str)
+    return pyodbc.connect(conn_str, timeout=60)
 
 
-# =========================
+# ============================================================
 # CONEXIÓN MONGODB
-# =========================
+# ============================================================
+
 def conectar_mongo():
     """
     Establece conexión con MongoDB Atlas (cuenta empresarial).
@@ -173,13 +206,14 @@ def conectar_mongo():
     if not MONGO_URI:
         raise ValueError("Falta la variable de entorno MONGO_CONNECTION_STRING")
 
-    client = MongoClient(MONGO_URI)
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=30000)
     return client[MONGO_DB][MONGO_COL]
 
 
-# =========================
+# ============================================================
 # UTILIDADES DE LIMPIEZA
-# =========================
+# ============================================================
+
 def limpiar(valor):
     """
     Convierte cualquier valor a texto limpio.
@@ -198,7 +232,6 @@ def a_float(valor, default=None):
     """
     if valor is None or valor == "":
         return default
-
     try:
         return float(valor)
     except (TypeError, ValueError):
@@ -212,13 +245,10 @@ def a_bool(valor):
     """
     if isinstance(valor, bool):
         return valor
-
     if valor is None:
         return False
-
     if isinstance(valor, (int, float)):
         return valor != 0
-
     texto = str(valor).strip().lower()
     return texto in {
         "1", "true", "t", "si", "sí", "s", "y", "yes",
@@ -226,9 +256,10 @@ def a_bool(valor):
     }
 
 
-# =========================
+# ============================================================
 # CONSTRUCCIÓN DE CARACTERÍSTICAS TÉCNICAS
-# =========================
+# ============================================================
+
 def construir_caracteristicas(row):
     """
     Las características técnicas en SQL Server vienen como pares de columnas:
@@ -251,9 +282,10 @@ def construir_caracteristicas(row):
     return [{"titulo": t, "valor": v} for t, v in pares if t or v]
 
 
-# =========================
+# ============================================================
 # CONSTRUCCIÓN DE TEXTO DE BÚSQUEDA
-# =========================
+# ============================================================
+
 def construir_texto_busqueda(row, caracteristicas):
     """
     Campo clave para NIA. Concatena todos los campos útiles en un
@@ -292,9 +324,10 @@ def construir_texto_busqueda(row, caracteristicas):
     return " ".join(filter(None, partes)).lower()
 
 
-# =========================
+# ============================================================
 # TRANSFORMACIÓN
-# =========================
+# ============================================================
+
 def transformar(row) -> dict:
     """
     Toma una fila cruda del SQL Server y la convierte en un documento
@@ -306,78 +339,81 @@ def transformar(row) -> dict:
     - construir_texto_busqueda()   → campo unificado para búsqueda NIA
     """
     caracteristicas = construir_caracteristicas(row)
-    texto_busqueda = construir_texto_busqueda(row, caracteristicas)
+    texto_busqueda  = construir_texto_busqueda(row, caracteristicas)
 
     return {
         # Identificación
-        "CODIGO": limpiar(row.CODIGO),
-        "REFERENCIA": limpiar(row.REFERENCIA),
-        "REF_ALTERNATIVA": limpiar(row.REF_ALTERNATIVA),
+        "CODIGO":                limpiar(row.CODIGO),
+        "REFERENCIA":            limpiar(row.REFERENCIA),
+        "REF_ALTERNATIVA":       limpiar(row.REF_ALTERNATIVA),
 
         # Descripción
         "DESCRIPCION_CORTA_PRE": limpiar(row.DESCRIPCION_CORTA_PRE),
         "DESCRIPCION_LARGA_PRE": limpiar(row.DESCRIPCION_LARGA_PRE),
 
         # Comercial
-        "MARCA_LET": limpiar(row.MARCA_LET),
-        "PRECIO_VENTA": a_float(row.PRECIO_VENTA, default=None),
+        "MARCA_LET":             limpiar(row.MARCA_LET),
+        "PRECIO_VENTA":          a_float(row.PRECIO_VENTA, default=None),
 
         # Jerarquía de categorías
-        "NIVEL_0": limpiar(row.NIVEL_0),
-        "NIVEL_1": limpiar(row.NIVEL_1),
-        "NIVEL_2": limpiar(row.NIVEL_2),
-        "NIVEL_3": limpiar(row.NIVEL_3),
-        "NIVEL_4": limpiar(row.NIVEL_4),
+        "NIVEL_0":               limpiar(row.NIVEL_0),
+        "NIVEL_1":               limpiar(row.NIVEL_1),
+        "NIVEL_2":               limpiar(row.NIVEL_2),
+        "NIVEL_3":               limpiar(row.NIVEL_3),
+        "NIVEL_4":               limpiar(row.NIVEL_4),
 
         # Características técnicas estructuradas
-        "CARACTERISTICAS": caracteristicas,
+        "CARACTERISTICAS":       caracteristicas,
 
         # Aplicaciones
-        "APLICACIONES": limpiar(row.APLICACIONES),
+        "APLICACIONES":          limpiar(row.APLICACIONES),
 
         # Stock por sede
-        "STOCK_BOG": a_float(row.INVENTARIO_BOG, default=0.0) or 0.0,
-        "STOCK_CALI": a_float(row.INVENTARIO_CALI, default=0.0) or 0.0,
-        "STOCK_TOTAL": a_float(row.STOCK, default=0.0) or 0.0,
+        "STOCK_BOG":             a_float(row.INVENTARIO_BOG, default=0.0) or 0.0,
+        "STOCK_CALI":            a_float(row.INVENTARIO_CALI, default=0.0) or 0.0,
+        "STOCK_TOTAL":           a_float(row.STOCK, default=0.0) or 0.0,
 
         # Equivalencias
-        "EQUIVALENTE": limpiar(row.EQUIVALENTE),
-        "EQUIVALENTE_2": limpiar(row.EQUIVALENTE_2),
+        "EQUIVALENTE":           limpiar(row.EQUIVALENTE),
+        "EQUIVALENTE_2":         limpiar(row.EQUIVALENTE_2),
 
         # Físico
-        "DIMENSION": limpiar(row.DIMENSION),
-        "PESO": a_float(row.PESO, default=None),
+        "DIMENSION":             limpiar(row.DIMENSION),
+        "PESO":                  a_float(row.PESO, default=None),
 
         # Control
-        "PV_FECHA": row.PV_FECHA.isoformat() if row.PV_FECHA else None,
-        "VISIBLE_EN_LINEA": a_bool(row.VISIBLE_EN_LINEA),
+        "PV_FECHA":              row.PV_FECHA.isoformat() if row.PV_FECHA else None,
+        "VISIBLE_EN_LINEA":      a_bool(row.VISIBLE_EN_LINEA),
 
         # Tiempo estimado de entrega — campo EXISTENCIA de SQL Server
-        "EXISTENCIA": limpiar(row.EXISTENCIA),
+        # Texto libre: "1 DIAS", "15 DIAS", "5 SEMANAS"
+        "EXISTENCIA":            limpiar(row.EXISTENCIA),
 
         # Campo clave para búsqueda NIA con RapidFuzz
-        "texto_busqueda": texto_busqueda,
+        "texto_busqueda":        texto_busqueda,
 
-        # Fecha de sincronización — cuándo fue la última vez que el ETL actualizó este producto
-        "etl_fecha": datetime.now(timezone.utc).isoformat(),
+        # Fecha de sincronización
+        "etl_fecha":             datetime.now(timezone.utc).isoformat(),
     }
 
 
-# =========================
+# ============================================================
 # ETL PRINCIPAL
-# =========================
+# ============================================================
+
 def ejecutar_etl():
     """
     Proceso principal del ETL.
 
     Flujo:
     1. Conecta a SQL Server y MongoDB
-    2. Ejecuta el query y recorre fila por fila
-    3. Transforma cada fila al formato MongoDB
-    4. Acumula operaciones en batches de 500
-    5. Envía cada batch a MongoDB con bulk_write
-    6. Si una fila falla, registra el error y continúa
-    7. Al final reporta total procesados y errores
+    2. Ejecuta el query
+    3. Lee las filas en lotes de 1000 — evita timeout TCP
+    4. Transforma cada fila al formato MongoDB
+    5. Acumula operaciones en batches de 500
+    6. Envía cada batch a MongoDB con bulk_write
+    7. Si una fila falla, registra el error y continúa
+    8. Al final reporta total procesados y errores
     """
     log.info("=" * 60)
     log.info("Iniciando ETL SQL Server → MongoDB")
@@ -385,65 +421,73 @@ def ejecutar_etl():
     log.info(f"Base Mongo: {MONGO_DB} | Colección: {MONGO_COL}")
     log.info("=" * 60)
 
-    # Conexiones
-    conn_sql = conectar_sql()
+    conn_sql  = conectar_sql()
     col_mongo = conectar_mongo()
     log.info("Conexiones establecidas correctamente")
 
     cursor = None
     try:
-        # Ejecutar query
         cursor = conn_sql.cursor()
         cursor.execute(QUERY)
         columnas = [col[0] for col in cursor.description]
         log.info("Query ejecutado — comenzando sincronización")
 
-        # Contadores
-        total = 0
-        errores = 0
+        total       = 0
+        errores     = 0
         operaciones = []
 
-        for fila in cursor:
-            try:
-                # Convierte la fila en objeto con atributos accesibles por nombre
-                row = type("Row", (), dict(zip(columnas, fila)))()
+        # -------------------------------------------------------
+        # LECTURA POR LOTES — clave para evitar timeout TCP
+        # fetchmany lee 1000 filas a la vez en lugar de todas
+        # de golpe. Esto evita que el servidor SQL corte la
+        # conexión por inactividad durante transferencias largas.
+        # -------------------------------------------------------
+        while True:
+            filas = cursor.fetchmany(SQL_FETCH_SIZE)
 
-                # Transforma la fila al formato MongoDB
-                doc = transformar(row)
+            if not filas:
+                break
 
-                # Upsert por CODIGO:
-                # - Si existe → actualiza todos los campos
-                # - Si no existe → inserta nuevo
-                # Nunca duplica, nunca borra
-                operaciones.append(
-                    UpdateOne(
-                        {"CODIGO": doc["CODIGO"]},
-                        {"$set": doc},
-                        upsert=True
+            log.info(f"Lote SQL recibido: {len(filas)} filas")
+
+            for fila in filas:
+                try:
+                    # Convierte la fila en objeto con atributos por nombre
+                    row = type("Row", (), dict(zip(columnas, fila)))()
+
+                    # Transforma la fila al formato MongoDB
+                    doc = transformar(row)
+
+                    # Upsert por CODIGO:
+                    # Si existe → actualiza. Si no → inserta.
+                    # Nunca duplica, nunca borra.
+                    operaciones.append(
+                        UpdateOne(
+                            {"CODIGO": doc["CODIGO"]},
+                            {"$set": doc},
+                            upsert=True
+                        )
                     )
-                )
 
-                # Cuando acumula 500 operaciones las envía a MongoDB
-                if len(operaciones) >= BATCH_SIZE:
-                    col_mongo.bulk_write(operaciones, ordered=False)
-                    total += len(operaciones)
-                    log.info(f"Sincronizados: {total:,} productos")
-                    operaciones = []
+                    # Cuando acumula 500 operaciones las envía a MongoDB
+                    if len(operaciones) >= MONGO_BATCH_SIZE:
+                        col_mongo.bulk_write(operaciones, ordered=False)
+                        total += len(operaciones)
+                        log.info(f"Sincronizados: {total:,} productos")
+                        operaciones = []
 
-            except Exception as e:
-                # Si una fila falla, registra el error y continúa con la siguiente
-                # No detiene todo el proceso por un producto con datos corruptos
-                errores += 1
-                log.error(f"Error en fila {total + errores}: {e}")
-                continue
+                except Exception as e:
+                    errores += 1
+                    log.error(f"Error en fila {total + errores}: {e}")
+                    continue
 
-        # Envía el último batch que quedó pendiente
+        # Envía el último batch pendiente
         if operaciones:
             col_mongo.bulk_write(operaciones, ordered=False)
             total += len(operaciones)
 
         log.info("=" * 60)
-        log.info("ETL completado exitosamente")
+        log.info("ETL principal completado")
         log.info(f"Total sincronizados : {total:,}")
         log.info(f"Total errores       : {errores:,}")
         log.info("=" * 60)
@@ -451,28 +495,15 @@ def ejecutar_etl():
         return {"procesados": total, "errores": errores}
 
     finally:
-        # Cierra conexiones aunque ocurra un error
         if cursor is not None:
             cursor.close()
         conn_sql.close()
 
 
-# =========================
-# QUERY INVENTARIO
-# =========================
-QUERY_INVENTARIO = """
-SELECT
-    INVENTARIO_CODIGO,
-    INVENTARIO,
-    INVENTARIO_FECHA
-FROM inventario
-WHERE INVENTARIO > 0
-"""
-
-
-# =========================
+# ============================================================
 # ETL INVENTARIO
-# =========================
+# ============================================================
+
 def ejecutar_etl_inventario():
     """
     Proceso secundario del ETL.
@@ -481,21 +512,20 @@ def ejecutar_etl_inventario():
     el stock en tiempo real de cada producto en MongoDB.
 
     Flujo:
-    1. Toma los productos con inventario positivo
-    2. Actualiza STOCK_TOTAL e INVENTARIO_FECHA
-    3. Marca la corrida con etl_inventario_fecha
-    4. Al final deja en cero los productos que no aparecieron en esta corrida
+    1. Lee productos con inventario positivo
+    2. Actualiza STOCK_TOTAL e INVENTARIO_FECHA en MongoDB
+    3. Al final pone en 0 los productos que no aparecieron
+       en esta corrida — evita stock viejo en MongoDB
 
-    Esto evita que MongoDB conserve stock viejo cuando un producto
-    ya no tiene inventario en la fuente.
+    La tabla inventario solo contiene productos con stock > 0.
+    Si un producto no aparece aquí, su stock real es 0.
     """
     log.info("=" * 60)
     log.info("Iniciando ETL Inventario → MongoDB")
     log.info("=" * 60)
 
-    run_id = datetime.now(timezone.utc).isoformat()
-
-    conn_sql = conectar_sql()
+    run_id    = datetime.now(timezone.utc).isoformat()
+    conn_sql  = conectar_sql()
     col_mongo = conectar_mongo()
 
     cursor = None
@@ -503,60 +533,72 @@ def ejecutar_etl_inventario():
         cursor = conn_sql.cursor()
         cursor.execute(QUERY_INVENTARIO)
 
-        total = 0
-        errores = 0
+        total               = 0
+        errores             = 0
         codigos_actualizados = set()
 
-        for fila in cursor:
-            try:
-                codigo = limpiar(fila[0])
-                cantidad = a_float(fila[1], default=0.0) or 0.0
-                fecha_inventario = fila[2].isoformat() if fila[2] else None
+        # -------------------------------------------------------
+        # LECTURA POR LOTES — mismo patrón que ETL principal
+        # -------------------------------------------------------
+        while True:
+            filas = cursor.fetchmany(SQL_FETCH_SIZE)
 
-                if not codigo:
+            if not filas:
+                break
+
+            log.info(f"Lote inventario: {len(filas)} filas")
+
+            for fila in filas:
+                try:
+                    codigo           = limpiar(fila[0])
+                    cantidad         = a_float(fila[1], default=0.0) or 0.0
+                    fecha_inventario = fila[2].isoformat() if fila[2] else None
+
+                    if not codigo:
+                        continue
+
+                    # Actualiza stock en MongoDB
+                    # Solo actualiza — no inserta productos nuevos
+                    resultado = col_mongo.update_one(
+                        {"CODIGO": codigo},
+                        {
+                            "$set": {
+                                "STOCK_TOTAL":           float(cantidad),
+                                "INVENTARIO_FECHA":      fecha_inventario,
+                                "etl_inventario_fecha":  run_id
+                            }
+                        }
+                    )
+
+                    if resultado.matched_count > 0:
+                        total += 1
+                        codigos_actualizados.add(codigo)
+
+                except Exception as e:
+                    errores += 1
+                    log.error(f"Error actualizando inventario: {e}")
                     continue
 
-                # Actualizar stock en tiempo real en MongoDB
-                # Solo actualiza — no inserta productos nuevos
-                resultado = col_mongo.update_one(
-                    {"CODIGO": codigo},
-                    {
-                        "$set": {
-                            "STOCK_TOTAL": float(cantidad),
-                            "INVENTARIO_FECHA": fecha_inventario,
-                            "etl_inventario_fecha": run_id
-                        }
-                    }
-                )
-
-                if resultado.matched_count > 0:
-                    total += 1
-                    codigos_actualizados.add(codigo)
-
-            except Exception as e:
-                errores += 1
-                log.error(f"Error actualizando inventario: {e}")
-                continue
-
-        # Limpieza final:
+        # -------------------------------------------------------
+        # LIMPIEZA DE STOCK VIEJO
         # Si un producto no fue actualizado en esta corrida,
-        # se considera sin inventario y se deja en 0.
-        #
-        # Esto evita que un stock viejo se quede “pegado” en MongoDB.
+        # se considera sin inventario y se pone en 0.
+        # Evita que un stock viejo quede "pegado" en MongoDB.
+        # -------------------------------------------------------
         if codigos_actualizados:
             resultado_limpieza = col_mongo.update_many(
                 {"CODIGO": {"$nin": list(codigos_actualizados)}},
                 {
                     "$set": {
-                        "STOCK_TOTAL": 0.0,
-                        "INVENTARIO_FECHA": None,
+                        "STOCK_TOTAL":          0.0,
+                        "INVENTARIO_FECHA":     None,
                         "etl_inventario_fecha": run_id
                     }
                 }
             )
             log.info(
-                "Limpieza de stock viejo aplicada a "
-                f"{resultado_limpieza.modified_count:,} productos"
+                f"Limpieza stock viejo: "
+                f"{resultado_limpieza.modified_count:,} productos en 0"
             )
         else:
             log.warning(
@@ -566,6 +608,7 @@ def ejecutar_etl_inventario():
 
         log.info(f"ETL Inventario completado. Actualizados: {total:,} | Errores: {errores:,}")
         log.info("=" * 60)
+
         return {"actualizados": total, "errores": errores}
 
     finally:
@@ -574,15 +617,16 @@ def ejecutar_etl_inventario():
         conn_sql.close()
 
 
-# =========================
+# ============================================================
 # PUNTO DE ENTRADA
-# =========================
+# ============================================================
+
 if __name__ == "__main__":
-    # Paso 1 — Cargar productos completos
+
+    # Paso 1 — Sincronizar productos completos desde SQL Server
     resultado_productos = ejecutar_etl()
     print(f"Productos: {resultado_productos}")
 
-    # Paso 2 — Actualizar stock en tiempo real
+    # Paso 2 — Actualizar stock en tiempo real desde tabla inventario
     resultado_inventario = ejecutar_etl_inventario()
     print(f"Inventario: {resultado_inventario}")
-    
