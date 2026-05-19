@@ -5,55 +5,21 @@
 # búsqueda de productos, generación de respuesta y contexto
 # multimodal inicial.
 #
-# VERSIÓN 0.6
+# VERSIÓN 0.7
 # Cambios:
-# - Log end to end de entrada y salida del chat
+# - Log end to end de entrada/salida del chat
 # - Trazabilidad por sesión para flujo completo
-# - Registro de salidas en saludo, bot, escalación, preorden,
+# - Registro de salida en saludo, bot, escalación, preorden,
 #   pregunta, búsqueda sin resultados y respuesta final
+# - Validación explícita de archivo_ruta para evitar errores tipo "string"
+# - Logs de búsqueda en chat (antes y después de buscar_productos)
 # - Mantiene la lógica multimodal y de búsqueda existente
-#
-# VERSIÓN 0.5 — Correcciones búsqueda multimodal:
-# - Query multimodal construido desde datos extraídos del archivo
-# - Umbral de confianza >= 40 para usar query multimodal
-# - Bloque buscar_productos() correctamente ubicado
-# - Indentación corregida en PASO 5B
-#
-# VERSIÓN 0.4 — Multimodal inicial:
-# - Detecta adjuntos desde el request
-# - Si existe archivo_ruta, analiza el archivo real con
-#   services.multimodal.analizar_archivo_local()
-# - Inyecta el contexto multimodal al historial antes de
-#   decidir si preguntar o buscar
-#
-# VERSIÓN 0.3 — Correcciones QA:
-# - Manejo correcto de búsqueda sin resultados
-# - Mensaje honesto cuando no se encuentra producto o código
-#
-# VERSIÓN 0.2 — Motor conversacional con sesiones:
-# - Gestión de sesiones con TTL de 30 minutos
-# - Detección de intención especial (bots, compra, escalación)
-# - Decisión inteligente: preguntar o buscar (máximo 3 preguntas)
-# - Búsqueda con contexto acumulado de la conversación
-# - Respuesta estructurada con ChatResponse
-# - Contexto completo para OpenAI: precio, stock, tiempo entrega
-#
-# FLUJO COMPLETO:
-# 1. Recibe mensaje + session_id (opcional)
-# 2. Obtiene o crea sesión en MongoDB
-# 3. Guarda mensaje en historial
-# 4. Si hay archivo, lo analiza con capa multimodal
-# 5. Detecta intención especial (bot, compra, escalación)
-# 6. Si flujo normal → decidir_accion (preguntar o buscar)
-# 7. Si PREGUNTAR → retorna pregunta técnica al cliente
-# 8. Si BUSCAR → construye query (multimodal o texto)
-# 9. Ejecuta buscar_productos() con el query final
-# 10. Si no hay resultados → responde honestamente sin OpenAI
-# 11. Genera recomendación con OpenAI + productos reales
-# 12. Guarda respuesta en historial y retorna ChatResponse
 # ============================================================
 
+from __future__ import annotations
+
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
@@ -88,13 +54,6 @@ router = APIRouter(tags=["Chat"])
 def construir_contexto_productos(resultados: list) -> str:
     """
     Construye el string de contexto de productos para OpenAI.
-
-    Incluye todos los campos comerciales relevantes:
-    código, referencia, precio (con regla PV_FECHA aplicada),
-    stock por sede, tiempo de entrega y características técnicas.
-
-    Este contexto es lo que NIA usa para hacer recomendaciones
-    precisas y completas al cliente.
     """
     if not resultados:
         return ""
@@ -134,9 +93,6 @@ def construir_contexto_multimodal(contexto: dict) -> str:
     """
     Convierte la extracción multimodal en un texto compacto
     para inyectarlo al historial conversacional.
-
-    La idea es que OpenAI sepa que llegó un archivo y qué
-    información relevante se extrajo de él.
     """
     if not contexto:
         return ""
@@ -181,9 +137,6 @@ def registrar_salida_chat(
 ) -> None:
     """
     Registra la salida final del flujo /chat.
-
-    Esto permite rastrear la entrada y la salida correspondiente
-    para cada sesión, como pidió Don Hugo.
     """
     registrar_traza_azure(
         etapa,
@@ -194,42 +147,42 @@ def registrar_salida_chat(
             "preguntas_hechas": preguntas_hechas,
             "productos_count": productos_count,
             "requiere_accion": requiere_accion,
-        }
+        },
     )
+
+
+def _archivo_ruta_valida(ruta: str | None) -> bool:
+    """
+    Valida si archivo_ruta realmente apunta a un archivo existente.
+
+    Evita el error típico de Swagger:
+    - archivo_ruta = "string"
+    """
+    if not ruta or not isinstance(ruta, str):
+        return False
+
+    ruta_limpia = ruta.strip()
+    if not ruta_limpia:
+        return False
+
+    if ruta_limpia.lower() == "string":
+        return False
+
+    try:
+        return Path(ruta_limpia).expanduser().exists()
+    except Exception:
+        return False
 
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(p: ChatRequest):
     """
     Endpoint principal del chatbot NIA.
-
-    Recibe:
-    - mensaje: texto del cliente
-    - session_id: ID de sesión existente (opcional)
-    - canal: 'web', 'whatsapp', 'api'
-    - cliente_id: identificador del cliente
-
-    Adjuntos:
-    - archivo_nombre
-    - archivo_tipo
-    - archivo_ruta
-    - archivo_mimetype
-
-    Retorna ChatResponse con:
-    - session_id: para que el frontend lo guarde
-    - respuesta: texto de NIA
-    - estado: 'recopilando' o 'completado'
-    - preguntas_hechas: contador de preguntas
-    - productos: lista de ProductoResponse
-    - requiere_accion: None, 'escalar_asesor' o 'generar_preorden'
     """
     mensaje = p.mensaje.strip()
 
     # -------------------------------------------------------
     # LOG END TO END — Input real recibido por NIA
-    #
-    # Este log permite rastrear exactamente qué está llegando
-    # desde frontend, WhatsApp o Azure hacia el backend.
     # -------------------------------------------------------
     registrar_traza_azure(
         "chat.input",
@@ -242,7 +195,7 @@ def chat(p: ChatRequest):
             "archivo_tipo": getattr(p, "archivo_tipo", None),
             "archivo_ruta": getattr(p, "archivo_ruta", None),
             "archivo_mimetype": getattr(p, "archivo_mimetype", None),
-        }
+        },
     )
 
     # -------------------------------------------------------
@@ -250,19 +203,48 @@ def chat(p: ChatRequest):
     # -------------------------------------------------------
     contexto_multimodal = None
 
-    if p.archivo_ruta:
+    if _archivo_ruta_valida(getattr(p, "archivo_ruta", None)):
         try:
             contexto_multimodal = analizar_archivo_local(
                 p.archivo_ruta,
                 mensaje_cliente=mensaje,
             )
-            logger.info(
-                "Archivo analizado multimodalmente: %s",
-                p.archivo_ruta
+            logger.info("Archivo analizado multimodalmente: %s", p.archivo_ruta)
+
+            registrar_traza_azure(
+                "chat.multimodal.output",
+                {
+                    "session_id": p.session_id,
+                    "archivo_ruta": p.archivo_ruta,
+                    "tipo_entrada": contexto_multimodal.get("tipo_entrada", ""),
+                    "tipo_solicitud": contexto_multimodal.get("tipo_solicitud", ""),
+                    "confianza": contexto_multimodal.get("confianza", 0),
+                    "requiere_aclaracion": contexto_multimodal.get("requiere_aclaracion", False),
+                    "texto_resumido": contexto_multimodal.get("texto_resumido", ""),
+                },
             )
         except Exception as e:
-            logger.error(f"Error procesando archivo multimodal: {e}")
+            logger.error("Error procesando archivo multimodal: %s", e)
+            registrar_traza_azure(
+                "chat.multimodal.error",
+                {
+                    "session_id": p.session_id,
+                    "archivo_ruta": getattr(p, "archivo_ruta", None),
+                    "error": str(e),
+                },
+            )
             contexto_multimodal = None
+
+    elif getattr(p, "archivo_ruta", None):
+        # Evita errores como archivo_ruta="string"
+        logger.warning("Se recibió archivo_ruta inválida o inexistente: %s", p.archivo_ruta)
+        registrar_traza_azure(
+            "chat.multimodal.invalid_path",
+            {
+                "session_id": p.session_id,
+                "archivo_ruta": p.archivo_ruta,
+            },
+        )
 
     elif p.archivo_nombre:
         try:
@@ -305,11 +287,32 @@ def chat(p: ChatRequest):
             logger.info(
                 "Archivo detectado sin ruta: %s (%s)",
                 archivo_detectado.nombre_original,
-                archivo_detectado.tipo_entrada
+                archivo_detectado.tipo_entrada,
+            )
+
+            registrar_traza_azure(
+                "chat.multimodal.output",
+                {
+                    "session_id": p.session_id,
+                    "archivo_nombre": p.archivo_nombre,
+                    "tipo_entrada": contexto_multimodal.get("tipo_entrada", ""),
+                    "tipo_solicitud": contexto_multimodal.get("tipo_solicitud", ""),
+                    "confianza": contexto_multimodal.get("confianza", 0),
+                    "requiere_aclaracion": contexto_multimodal.get("requiere_aclaracion", False),
+                    "texto_resumido": contexto_multimodal.get("texto_resumido", ""),
+                },
             )
 
         except Exception as e:
-            logger.error(f"Error procesando archivo multimodal: {e}")
+            logger.error("Error procesando archivo multimodal: %s", e)
+            registrar_traza_azure(
+                "chat.multimodal.error",
+                {
+                    "session_id": p.session_id,
+                    "archivo_nombre": p.archivo_nombre,
+                    "error": str(e),
+                },
+            )
             contexto_multimodal = None
 
     # -------------------------------------------------------
@@ -322,7 +325,7 @@ def chat(p: ChatRequest):
 
     if not sesion:
         sesion = crear_sesion(canal=p.canal, cliente_id=p.cliente_id)
-        logger.info(f"Sesión nueva creada: {sesion['_id']}")
+        logger.info("Sesión nueva creada: %s", sesion["_id"])
 
     session_id = sesion["_id"]
     preguntas_hechas = sesion.get("preguntas_hechas", 0)
@@ -344,10 +347,12 @@ def chat(p: ChatRequest):
     if contexto_multimodal:
         contexto_archivo = construir_contexto_multimodal(contexto_multimodal)
         if contexto_archivo.strip():
-            historial.append({
-                "role": "system",
-                "content": contexto_archivo
-            })
+            historial.append(
+                {
+                    "role": "system",
+                    "content": contexto_archivo,
+                }
+            )
 
     # -------------------------------------------------------
     # PASO 3: Detectar intención especial
@@ -355,7 +360,10 @@ def chat(p: ChatRequest):
     intencion = detectar_intencion_especial(mensaje)
 
     if intencion == "saludo":
-        respuesta_saludo = "Hola, soy NIA, asesora comercial de VIA Industrial. ¿En qué producto puedo ayudarte hoy?"
+        respuesta_saludo = (
+            "Hola, soy NIA, asesora comercial de VIA Industrial. "
+            "¿En qué producto puedo ayudarte hoy?"
+        )
         agregar_mensaje(session_id, "assistant", respuesta_saludo)
         registrar_salida_chat(
             session_id=session_id,
@@ -372,7 +380,7 @@ def chat(p: ChatRequest):
             estado="recopilando",
             preguntas_hechas=preguntas_hechas,
             productos=[],
-            requiere_accion=None
+            requiere_accion=None,
         )
 
     if intencion == "bot_detectado":
@@ -393,7 +401,7 @@ def chat(p: ChatRequest):
             estado="cerrado",
             preguntas_hechas=preguntas_hechas,
             productos=[],
-            requiere_accion=None
+            requiere_accion=None,
         )
 
     if intencion == "escalar_asesor":
@@ -413,7 +421,7 @@ def chat(p: ChatRequest):
             estado="recopilando",
             preguntas_hechas=preguntas_hechas,
             productos=[],
-            requiere_accion="escalar_asesor"
+            requiere_accion="escalar_asesor",
         )
 
     if intencion == "generar_preorden":
@@ -433,7 +441,7 @@ def chat(p: ChatRequest):
             estado="recopilando",
             preguntas_hechas=preguntas_hechas,
             productos=[],
-            requiere_accion="generar_preorden"
+            requiere_accion="generar_preorden",
         )
 
     # -------------------------------------------------------
@@ -442,10 +450,10 @@ def chat(p: ChatRequest):
     try:
         decision = decidir_accion(historial, preguntas_hechas)
     except Exception as e:
-        logger.error(f"Error en decidir_accion: {e}")
+        logger.error("Error en decidir_accion: %s", e)
         raise HTTPException(
             status_code=502,
-            detail="Error procesando la consulta. Intenta nuevamente."
+            detail="Error procesando la consulta. Intenta nuevamente.",
         )
 
     # -------------------------------------------------------
@@ -473,7 +481,7 @@ def chat(p: ChatRequest):
             estado="recopilando",
             preguntas_hechas=preguntas_hechas + 1,
             productos=[],
-            requiere_accion=None
+            requiere_accion=None,
         )
 
     # -------------------------------------------------------
@@ -499,13 +507,27 @@ def chat(p: ChatRequest):
         if query_multimodal.strip() and confianza >= 40:
             query_busqueda = query_multimodal
             logger.info(
-                f"Query multimodal construido: {query_busqueda} "
-                f"(confianza: {confianza})"
+                "Query multimodal construido: %s (confianza: %s)",
+                query_busqueda,
+                confianza,
             )
         else:
             logger.info(
-                f"Confianza baja ({confianza}) — usando query original: {query_busqueda}"
+                "Confianza baja (%s) — usando query original: %s",
+                confianza,
+                query_busqueda,
             )
+
+    # Log de búsqueda antes de ejecutar search.py
+    registrar_traza_azure(
+        "chat.buscar.input",
+        {
+            "session_id": session_id,
+            "query_busqueda": query_busqueda,
+            "preguntas_hechas": preguntas_hechas,
+            "usa_multimodal": bool(contexto_multimodal),
+        },
+    )
 
     # -------------------------------------------------------
     # PASO 5C: Ejecutar búsqueda con el query final
@@ -513,11 +535,28 @@ def chat(p: ChatRequest):
     try:
         resultados = buscar_productos(query_busqueda, limit=5)
     except Exception as e:
-        logger.error(f"Error buscando productos: {e}")
+        logger.error("Error buscando productos: %s", e)
+        registrar_traza_azure(
+            "chat.buscar.error",
+            {
+                "session_id": session_id,
+                "query_busqueda": query_busqueda,
+                "error": str(e),
+            },
+        )
         raise HTTPException(
             status_code=503,
-            detail="Error consultando el catálogo. Intenta nuevamente."
+            detail="Error consultando el catálogo. Intenta nuevamente.",
         )
+
+    registrar_traza_azure(
+        "chat.buscar.output",
+        {
+            "session_id": session_id,
+            "query_busqueda": query_busqueda,
+            "productos_count": len(resultados),
+        },
+    )
 
     # -------------------------------------------------------
     # PASO 6: Verificar resultados
@@ -544,7 +583,7 @@ def chat(p: ChatRequest):
             estado="completado",
             preguntas_hechas=preguntas_hechas,
             productos=[],
-            requiere_accion=None
+            requiere_accion=None,
         )
 
     # -------------------------------------------------------
@@ -555,10 +594,10 @@ def chat(p: ChatRequest):
     try:
         respuesta_texto = generar_recomendacion(historial, contexto_productos)
     except Exception as e:
-        logger.error(f"Error generando recomendación: {e}")
+        logger.error("Error generando recomendación: %s", e)
         raise HTTPException(
             status_code=502,
-            detail="Error generando respuesta. Intenta nuevamente."
+            detail="Error generando respuesta. Intenta nuevamente.",
         )
 
     # -------------------------------------------------------
@@ -588,7 +627,7 @@ def chat(p: ChatRequest):
         estado="completado",
         preguntas_hechas=preguntas_hechas,
         productos=productos_formateados,
-        requiere_accion=None
+        requiere_accion=None,
     )
 
 
@@ -596,10 +635,8 @@ def chat(p: ChatRequest):
 def cerrar_chat(session_id: str):
     """
     Cierra una sesión de chat manualmente.
-
-    El frontend puede llamar esto cuando el cliente cierra el chat.
-    En producción con WhatsApp no se usa — el TTL maneja el cierre.
     """
     from services.session import cerrar_sesion
+
     cerrar_sesion(session_id)
     return {"ok": True, "session_id": session_id}

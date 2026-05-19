@@ -2,19 +2,20 @@
 # services/ai.py
 # Responsabilidad única: toda la lógica de inteligencia de NIA.
 #
-# VERSIÓN 0.4
+# VERSIÓN 0.5
 # Cambios:
+# - Log de uso OpenAI: tokens, modelo, response_id y costo estimado opcional
 # - Log end to end seguro para decisiones y recomendaciones
 # - Detección de saludo puro más estricta
 # - "Hola, necesito..." ya no se clasifica como saludo
 # - PROMPT_DECISION afinado para saludos limpios vs intención comercial
 # - Fallbacks robustos mantenidos
 #
-# VERSIÓN 0.3
+# VERSIÓN 0.4
 # - PROMPT_DECISION actualizado con reglas para saludos
 # - Manejo de mensajes sin relación con productos industriales
 #
-# VERSIÓN 0.2
+# VERSIÓN 0.3
 # - Cliente OpenAI reutilizable con patrón lazy
 # - SYSTEM_PROMPT cargado desde archivo externo
 # - PROMPT_DECISION para decidir si preguntar o buscar
@@ -29,20 +30,18 @@
 #    → PREGUNTAR: NIA hace una pregunta técnica (máximo 3)
 #    → BUSCAR: NIA busca en MongoDB y recomienda
 # 4. generar_recomendacion() — genera respuesta con productos reales
-#
-# LO QUE NO HACE TODAVÍA (Fase 2):
-# - Identificación de cliente por NIT o celular
-# - Clasificación Bronce/Platino/Oro
-# - Notificación automática al asesor asignado
-# - Pre-órdenes con datos del cliente
 # ============================================================
 
-from openai import OpenAI
-from pathlib import Path
+from __future__ import annotations
+
+import logging
 import os
 import re
 import unicodedata
-import logging
+from pathlib import Path
+from typing import Any
+
+from openai import OpenAI
 
 from services.audit import registrar_traza_azure
 
@@ -51,12 +50,11 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # UTILIDAD DE TRAZAS SEGURAS
 # ============================================================
-#
 # Si el log a archivo falla, no debe romper el flujo de NIA.
-# Por eso envolvemos registrar_traza_azure en un try/except.
 # ============================================================
 
-def _registrar_traza_segura(etapa: str, payload: dict) -> None:
+
+def _registrar_traza_segura(etapa: str, payload: dict[str, Any]) -> None:
     """
     Registra trazas en Azure/archivo sin afectar el flujo principal
     si el sistema de logging falla.
@@ -67,24 +65,70 @@ def _registrar_traza_segura(etapa: str, payload: dict) -> None:
         logger.warning("No se pudo registrar traza %s: %s", etapa, e)
 
 
+def _extraer_uso_openai(response: Any) -> dict[str, Any]:
+    """
+    Extrae el bloque usage de la respuesta de OpenAI de forma segura.
+
+    Devuelve algo como:
+    {
+        "prompt_tokens": 123,
+        "completion_tokens": 456,
+        "total_tokens": 579
+    }
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {}
+
+    if hasattr(usage, "model_dump"):
+        try:
+            datos = usage.model_dump(exclude_none=True)
+            return datos if isinstance(datos, dict) else {}
+        except TypeError:
+            datos = usage.model_dump()
+            return datos if isinstance(datos, dict) else {}
+
+    if isinstance(usage, dict):
+        return {k: v for k, v in usage.items() if v is not None}
+
+    return {
+        "prompt_tokens": getattr(usage, "prompt_tokens", None),
+        "completion_tokens": getattr(usage, "completion_tokens", None),
+        "total_tokens": getattr(usage, "total_tokens", None),
+    }
+
+
+def _estimar_costo_desde_uso(uso: dict[str, Any]) -> dict[str, Any]:
+    """
+    Calcula un costo estimado opcional si defines tarifas por env.
+
+    Variables esperadas:
+    - OPENAI_INPUT_PRICE_PER_1M_TOKENS_USD
+    - OPENAI_OUTPUT_PRICE_PER_1M_TOKENS_USD
+
+    Si no existen, no se estima costo.
+    """
+    precio_entrada = os.getenv("OPENAI_INPUT_PRICE_PER_1M_TOKENS_USD")
+    precio_salida = os.getenv("OPENAI_OUTPUT_PRICE_PER_1M_TOKENS_USD")
+
+    if not precio_entrada or not precio_salida:
+        return {}
+
+    try:
+        prompt_tokens = float(uso.get("prompt_tokens") or 0)
+        completion_tokens = float(uso.get("completion_tokens") or 0)
+
+        costo = (
+            (prompt_tokens / 1_000_000.0) * float(precio_entrada)
+            + (completion_tokens / 1_000_000.0) * float(precio_salida)
+        )
+        return {"costo_estimado_usd": round(costo, 6)}
+    except (TypeError, ValueError):
+        return {}
+
+
 # ============================================================
 # CARGA DEL PROMPT MAESTRO
-# ============================================================
-#
-# El prompt maestro vive fuera del código para:
-# - mantener ai.py limpio
-# - permitir cambios sin tocar lógica
-# - facilitar mantenimiento
-# - preparar multimodalidad
-# - preparar Responses API
-#
-# Arquitectura:
-# prompts/prompt_maestro_nia.txt
-#        ↓
-# services/ai.py
-#        ↓
-# OpenAI GPT
-#
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -94,11 +138,6 @@ PROMPT_PATH = BASE_DIR / "prompts" / "prompt_maestro_nia.txt"
 def cargar_prompt_maestro() -> str:
     """
     Carga el prompt maestro oficial de NIA desde archivo externo.
-
-    Retorna:
-    - string completo del prompt
-
-    Falla rápido si el archivo no existe.
     """
     if not PROMPT_PATH.exists():
         raise FileNotFoundError(
@@ -106,7 +145,6 @@ def cargar_prompt_maestro() -> str:
         )
 
     prompt = PROMPT_PATH.read_text(encoding="utf-8").strip()
-
     if not prompt:
         raise ValueError("El prompt maestro está vacío.")
 
@@ -125,7 +163,6 @@ def get_ai_client() -> OpenAI:
     """
     Retorna el cliente OpenAI reutilizable.
     Patrón lazy — se crea solo cuando se necesita por primera vez.
-    Un solo cliente por proceso — no uno por request.
     Falla rápido si la API key no está configurada.
     """
     global _client
@@ -145,13 +182,6 @@ def get_ai_client() -> OpenAI:
 
 # ============================================================
 # PROMPT DE DECISIÓN
-# Le dice a la IA cuándo preguntar y cuándo buscar.
-# Temperature muy baja (0.1) para decisiones consistentes.
-#
-# VERSIÓN 0.4 — Ajuste:
-# - Solo considera saludo si es un saludo limpio/puro
-# - Si el mensaje tiene saludo + intención comercial
-#   NO debe tratarse como saludo puro
 # ============================================================
 
 PROMPT_DECISION = """Eres NIA, asesora comercial de VIA Industrial.
@@ -189,7 +219,6 @@ REGLAS CRÍTICAS:
 
 # ============================================================
 # DETECCIÓN DE INTENCIÓN ESPECIAL
-# Detección local — no llama a OpenAI para ahorrar tokens.
 # ============================================================
 
 SALUDOS_PUROS = {
@@ -210,6 +239,7 @@ SALUDOS_PUROS = {
     "hola buenas noches",
     "hola buen dia",
 }
+
 
 def normalizar_texto_simple(texto: str) -> str:
     """
@@ -243,15 +273,11 @@ def detectar_intencion_especial(mensaje: str) -> str | None:
     Detecta intenciones especiales que requieren acción diferente al flujo normal.
 
     Retorna:
-    - 'saludo'           → el cliente solo saluda
-    - 'escalar_asesor'   → el cliente quiere hablar con un humano o pide descuento
-    - 'generar_preorden' → el cliente quiere comprar o cotizar formalmente
-    - 'bot_detectado'    → parece un vendedor externo, competidor o bot
-    - None               → flujo normal de conversación técnica
-
-    IMPORTANTE — keywords de compra vs información:
-    Preguntar por disponibilidad o precio NO es intención de compra.
-    Solo se detecta compra cuando el cliente expresa decisión de adquirir.
+    - 'saludo'
+    - 'escalar_asesor'
+    - 'generar_preorden'
+    - 'bot_detectado'
+    - None
     """
     mensaje_lower = normalizar_texto_simple(mensaje)
 
@@ -261,7 +287,6 @@ def detectar_intencion_especial(mensaje: str) -> str | None:
         return "saludo"
 
     # Vendedores externos, competidores o bots
-    # Detectados primero — tienen prioridad sobre todo lo demás
     keywords_bot = [
         "soy vendedor", "soy proveedor", "ofrezco productos",
         "vendo equipos", "distribuidor de", "mejor precio que via",
@@ -269,7 +294,6 @@ def detectar_intencion_especial(mensaje: str) -> str | None:
     ]
 
     # Intención de compra real — el cliente decide adquirir
-    # NO incluye preguntas de información como "¿tienen?" o "¿está disponible?"
     keywords_compra = [
         "quiero comprar", "quiero cotizar", "me interesa comprarlo",
         "lo quiero pedir", "hacer un pedido", "orden de compra",
@@ -287,7 +311,6 @@ def detectar_intencion_especial(mensaje: str) -> str | None:
         "despacho", "envio a"
     ]
 
-    # Verificar en orden de prioridad
     for kw in keywords_bot:
         if kw in mensaje_lower:
             return "bot_detectado"
@@ -311,28 +334,23 @@ def decidir_accion(historial: list, preguntas_hechas: int) -> dict:
     """
     Consulta a la IA para decidir si debe hacer una pregunta técnica
     o buscar productos en el catálogo.
-
-    Parámetros:
-    - historial: lista completa de mensajes de la conversación
-    - preguntas_hechas: cuántas preguntas ya hizo NIA en esta sesión
-
-    Retorna:
-    - {"accion": "PREGUNTAR", "pregunta": "..."}
-    - {"accion": "BUSCAR",    "query":   "..."}
-
-    Fallbacks robustos:
-    1. Si preguntas_hechas >= 3 → BUSCAR sin llamar a OpenAI
-    2. Si OpenAI falla → BUSCAR con último mensaje del cliente
-    3. Si respuesta tiene formato inesperado → BUSCAR con historial completo
-    4. Si PREGUNTAR pero sin texto de pregunta → BUSCAR con historial
     """
     # Forzar búsqueda si ya se hicieron 3 preguntas — sin gastar tokens
     if preguntas_hechas >= 3:
-        mensajes_cliente = [
-            m["content"] for m in historial if m["role"] == "user"
-        ]
+        mensajes_cliente = [m["content"] for m in historial if m["role"] == "user"]
+        query_forzada = " ".join(mensajes_cliente).strip()
+
+        _registrar_traza_segura(
+            "decidir_accion.forzado_buscar",
+            {
+                "preguntas_hechas": preguntas_hechas,
+                "historial": historial,
+                "query_forzada": query_forzada,
+            },
+        )
+
         logger.info("3 preguntas alcanzadas — forzando BUSCAR")
-        return {"accion": "BUSCAR", "query": " ".join(mensajes_cliente)}
+        return {"accion": "BUSCAR", "query": query_forzada}
 
     try:
         mensajes = [{"role": "system", "content": PROMPT_DECISION}] + historial
@@ -346,7 +364,7 @@ def decidir_accion(historial: list, preguntas_hechas: int) -> dict:
                 "preguntas_hechas": preguntas_hechas,
                 "historial": historial,
                 "prompt_decision": PROMPT_DECISION,
-            }
+            },
         )
 
         response = get_ai_client().chat.completions.create(
@@ -357,14 +375,25 @@ def decidir_accion(historial: list, preguntas_hechas: int) -> dict:
         )
 
         texto = (response.choices[0].message.content or "").strip()
-        logger.info(f"Decisión IA raw: {texto[:150]}")
+        logger.info("Decisión IA raw: %s", texto[:150])
+
+        uso = _extraer_uso_openai(response)
+        payload_uso = {
+            "model": getattr(response, "model", "gpt-4o-mini"),
+            "response_id": getattr(response, "id", None),
+            "usage": uso,
+        }
+        payload_uso.update(_estimar_costo_desde_uso(uso))
+
+        if uso:
+            _registrar_traza_segura("decidir_accion.usage", payload_uso)
 
         _registrar_traza_segura(
             "decidir_accion.output",
             {
                 "model": "gpt-4o-mini",
                 "raw_response": texto,
-            }
+            },
         )
 
         # Parsear PREGUNTAR
@@ -375,11 +404,9 @@ def decidir_accion(historial: list, preguntas_hechas: int) -> dict:
                     pregunta = linea.replace("PREGUNTA:", "").strip()
                     break
 
-            # Si tiene pregunta válida la retornamos
             if pregunta:
                 return {"accion": "PREGUNTAR", "pregunta": pregunta}
 
-            # Si dice PREGUNTAR pero no hay texto de pregunta → BUSCAR
             logger.warning("PREGUNTAR sin texto de pregunta — fallback a BUSCAR")
 
         # Parsear BUSCAR
@@ -393,18 +420,15 @@ def decidir_accion(historial: list, preguntas_hechas: int) -> dict:
             if query:
                 return {"accion": "BUSCAR", "query": query}
 
-            # Si dice BUSCAR pero no hay query → usar historial
             logger.warning("BUSCAR sin query — usando historial completo")
 
-        # Formato completamente inesperado → BUSCAR con historial
-        logger.warning(f"Formato inesperado de IA: {texto[:100]}")
-        mensajes_cliente = [
-            m["content"] for m in historial if m["role"] == "user"
-        ]
+        # Formato inesperado → BUSCAR con historial
+        logger.warning("Formato inesperado de IA: %s", texto[:100])
+        mensajes_cliente = [m["content"] for m in historial if m["role"] == "user"]
         return {"accion": "BUSCAR", "query": " ".join(mensajes_cliente)}
 
     except Exception as e:
-        logger.error(f"Error en decidir_accion: {e}")
+        logger.error("Error en decidir_accion: %s", e)
 
         _registrar_traza_segura(
             "decidir_accion.error",
@@ -412,14 +436,10 @@ def decidir_accion(historial: list, preguntas_hechas: int) -> dict:
                 "error": str(e),
                 "preguntas_hechas": preguntas_hechas,
                 "historial": historial,
-            }
+            },
         )
 
-        # Fallback final — buscar con el último mensaje del cliente
-        ultimo = next(
-            (m["content"] for m in reversed(historial) if m["role"] == "user"),
-            ""
-        )
+        ultimo = next((m["content"] for m in reversed(historial) if m["role"] == "user"), "")
         return {"accion": "BUSCAR", "query": ultimo}
 
 
@@ -430,16 +450,7 @@ def decidir_accion(historial: list, preguntas_hechas: int) -> dict:
 def generar_recomendacion(historial: list, contexto_productos: str) -> str:
     """
     Genera la respuesta final de NIA con los productos encontrados.
-
-    Parámetros:
-    - historial: conversación completa para contexto
-    - contexto_productos: string con productos de MongoDB
-      (código, referencia, precio, stock, características)
-
-    Maneja el caso de contexto vacío — NIA responde honestamente
-    sin inventar productos.
     """
-    # Si no hay productos NIA lo maneja con honestidad
     if not contexto_productos or contexto_productos.strip() == "":
         instruccion_productos = (
             "No encontré productos en el catálogo que coincidan exactamente. "
@@ -447,18 +458,18 @@ def generar_recomendacion(historial: list, contexto_productos: str) -> str:
         )
     else:
         instruccion_productos = (
-            f"PRODUCTOS DISPONIBLES EN CATÁLOGO DE VIA INDUSTRIAL:\n"
+            "PRODUCTOS DISPONIBLES EN CATÁLOGO DE VIA INDUSTRIAL:\n"
             f"{contexto_productos}\n\n"
-            f"Recomienda máximo 3 productos ordenados de mayor a menor relevancia. "
-            f"Para cada uno incluye: nombre, código, referencia, precio y disponibilidad. "
-            f"Si el precio dice Consultarnos indícalo y sugiere contactar al asesor. "
-            f"Si hay stock en Bogotá o Cali menciónalo explícitamente. "
-            f"Si hay equivalentes y el producto no tiene stock, ofrécelos."
+            "Recomienda máximo 3 productos ordenados de mayor a menor relevancia. "
+            "Para cada uno incluye: nombre, código, referencia, precio y disponibilidad. "
+            "Si el precio dice Consultarnos indícalo y sugiere contactar al asesor. "
+            "Si hay stock en Bogotá o Cali menciónalo explícitamente. "
+            "Si hay equivalentes y el producto no tiene stock, ofrécelos."
         )
 
     mensajes = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "system", "content": instruccion_productos}
+        {"role": "system", "content": instruccion_productos},
     ] + historial
 
     _registrar_traza_segura(
@@ -471,7 +482,7 @@ def generar_recomendacion(historial: list, contexto_productos: str) -> str:
             "contexto_productos": contexto_productos,
             "system_prompt": SYSTEM_PROMPT,
             "instruccion_productos": instruccion_productos,
-        }
+        },
     )
 
     try:
@@ -484,18 +495,29 @@ def generar_recomendacion(historial: list, contexto_productos: str) -> str:
 
         respuesta = (response.choices[0].message.content or "").strip()
 
+        uso = _extraer_uso_openai(response)
+        payload_uso = {
+            "model": getattr(response, "model", "gpt-4o-mini"),
+            "response_id": getattr(response, "id", None),
+            "usage": uso,
+        }
+        payload_uso.update(_estimar_costo_desde_uso(uso))
+
+        if uso:
+            _registrar_traza_segura("generar_recomendacion.usage", payload_uso)
+
         _registrar_traza_segura(
             "generar_recomendacion.output",
             {
                 "model": "gpt-4o-mini",
                 "respuesta_modelo": respuesta,
-            }
+            },
         )
 
         return respuesta
 
     except Exception as e:
-        logger.error(f"Error en generar_recomendacion: {e}")
+        logger.error("Error en generar_recomendacion: %s", e)
 
         _registrar_traza_segura(
             "generar_recomendacion.error",
@@ -503,35 +525,26 @@ def generar_recomendacion(historial: list, contexto_productos: str) -> str:
                 "error": str(e),
                 "historial": historial,
                 "contexto_productos": contexto_productos,
-            }
+            },
         )
-
         raise
 
 
 # ============================================================
 # MENSAJES ESTÁNDAR DE NIA
-# Centralizados aquí para consistencia en toda la aplicación.
 # ============================================================
 
-# Respuesta cuando se detecta bot o vendedor externo
 RESPUESTA_BOT = (
     "Este canal es exclusivo para clientes de VIA Industrial. "
     "Si usted es cliente y necesita asesoría, con gusto le ayudamos."
 )
 
-# Respuesta cuando el cliente pide un asesor humano
-# Fase 1: avisa que se registró la solicitud
-# Fase 2: conectará automáticamente con el asesor asignado
 RESPUESTA_ESCALACION = (
     "Entendido. He registrado su solicitud para que un asesor comercial "
     "de VIA Industrial se comunique con usted. "
     "¿Desea dejarnos su nombre y número de contacto para que le llamemos?"
 )
 
-# Respuesta cuando el cliente quiere cotizar
-# Fase 1: avisa que se registró el interés
-# Fase 2: generará pre-orden automática con notificación al asesor
 RESPUESTA_PREORDEN = (
     "Perfecto, con mucho gusto. Para generar su cotización necesito "
     "algunos datos: ¿cuál es su nombre y el nombre de su empresa?"
