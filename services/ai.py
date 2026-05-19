@@ -2,11 +2,19 @@
 # services/ai.py
 # Responsabilidad única: toda la lógica de inteligencia de NIA.
 #
-# VERSIÓN 0.3:
+# VERSIÓN 0.4
+# Cambios:
+# - Log end to end seguro para decisiones y recomendaciones
+# - Detección de saludo puro más estricta
+# - "Hola, necesito..." ya no se clasifica como saludo
+# - PROMPT_DECISION afinado para saludos limpios vs intención comercial
+# - Fallbacks robustos mantenidos
+#
+# VERSIÓN 0.3
 # - PROMPT_DECISION actualizado con reglas para saludos
 # - Manejo de mensajes sin relación con productos industriales
 #
-# VERSIÓN 0.2:
+# VERSIÓN 0.2
 # - Cliente OpenAI reutilizable con patrón lazy
 # - SYSTEM_PROMPT cargado desde archivo externo
 # - PROMPT_DECISION para decidir si preguntar o buscar
@@ -32,9 +40,32 @@
 from openai import OpenAI
 from pathlib import Path
 import os
+import re
+import unicodedata
 import logging
 
+from services.audit import registrar_traza_azure
+
 logger = logging.getLogger(__name__)
+
+# ============================================================
+# UTILIDAD DE TRAZAS SEGURAS
+# ============================================================
+#
+# Si el log a archivo falla, no debe romper el flujo de NIA.
+# Por eso envolvemos registrar_traza_azure en un try/except.
+# ============================================================
+
+def _registrar_traza_segura(etapa: str, payload: dict) -> None:
+    """
+    Registra trazas en Azure/archivo sin afectar el flujo principal
+    si el sistema de logging falla.
+    """
+    try:
+        registrar_traza_azure(etapa, payload)
+    except Exception as e:
+        logger.warning("No se pudo registrar traza %s: %s", etapa, e)
+
 
 # ============================================================
 # CARGA DEL PROMPT MAESTRO
@@ -56,7 +87,7 @@ logger = logging.getLogger(__name__)
 #
 # ============================================================
 
-BASE_DIR    = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 PROMPT_PATH = BASE_DIR / "prompts" / "prompt_maestro_nia.txt"
 
 
@@ -117,10 +148,10 @@ def get_ai_client() -> OpenAI:
 # Le dice a la IA cuándo preguntar y cuándo buscar.
 # Temperature muy baja (0.1) para decisiones consistentes.
 #
-# VERSIÓN 0.3 — Cambios:
-# - Regla explícita para saludos → PREGUNTAR con bienvenida
-# - Regla para mensajes sin relación con productos → PREGUNTAR
-# - Evita que NIA busque productos cuando el cliente saluda
+# VERSIÓN 0.4 — Ajuste:
+# - Solo considera saludo si es un saludo limpio/puro
+# - Si el mensaje tiene saludo + intención comercial
+#   NO debe tratarse como saludo puro
 # ============================================================
 
 PROMPT_DECISION = """Eres NIA, asesora comercial de VIA Industrial.
@@ -145,7 +176,8 @@ ACCION: BUSCAR
 QUERY: [términos de búsqueda aquí]
 
 REGLAS CRÍTICAS:
-- Si el mensaje es un saludo ("hola", "buenos días", "buenas", "hey", "buen día", "buenas tardes", "buenas noches", etc.) SIEMPRE elige PREGUNTAR y responde con: "Hola, soy NIA, asesora comercial de VIA Industrial. ¿En qué producto puedo ayudarte hoy?"
+- Si el mensaje es un saludo limpio y sin intención comercial ("hola", "buenos días", "buenas", etc.) SIEMPRE elige PREGUNTAR y responde con: "Hola, soy NIA, asesora comercial de VIA Industrial. ¿En qué producto puedo ayudarte hoy?"
+- Si el mensaje contiene saludo + necesidad comercial (por ejemplo: "Hola, necesito una válvula...") NO lo trates como saludo puro; prioriza la intención comercial
 - Si el mensaje no tiene ninguna relación con productos industriales SIEMPRE elige PREGUNTAR preguntando en qué puede ayudar
 - Máximo 3 preguntas en toda la conversación — si ya hiciste 3 SIEMPRE elige BUSCAR
 - Si el cliente da una referencia o código exacto SIEMPRE elige BUSCAR inmediatamente
@@ -160,11 +192,58 @@ REGLAS CRÍTICAS:
 # Detección local — no llama a OpenAI para ahorrar tokens.
 # ============================================================
 
+SALUDOS_PUROS = {
+    "hola",
+    "buenos dias",
+    "buenas tardes",
+    "buenas noches",
+    "buenas",
+    "hey",
+    "hi",
+    "hello",
+    "good morning",
+    "buen dia",
+    "saludos",
+    "hola buenas",
+    "hola buenos dias",
+    "hola buenas tardes",
+    "hola buenas noches",
+    "hola buen dia",
+}
+
+def normalizar_texto_simple(texto: str) -> str:
+    """
+    Normaliza texto para comparaciones simples:
+    - minúsculas
+    - sin acentos
+    - sin espacios repetidos
+    - sin signos de puntuación al inicio/fin
+    """
+    texto = str(texto).lower().strip()
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    texto = re.sub(r"\s+", " ", texto)
+    texto = texto.strip(" \t\n\r,!.?¿¡:;")
+    return texto
+
+
+def es_saludo_puro(mensaje: str) -> bool:
+    """
+    Detecta solo saludos limpios, no mensajes mixtos.
+    Ejemplo:
+    - "hola" → True
+    - "hola, necesito una válvula" → False
+    """
+    texto = normalizar_texto_simple(mensaje)
+    return texto in SALUDOS_PUROS
+
+
 def detectar_intencion_especial(mensaje: str) -> str | None:
     """
     Detecta intenciones especiales que requieren acción diferente al flujo normal.
 
     Retorna:
+    - 'saludo'           → el cliente solo saluda
     - 'escalar_asesor'   → el cliente quiere hablar con un humano o pide descuento
     - 'generar_preorden' → el cliente quiere comprar o cotizar formalmente
     - 'bot_detectado'    → parece un vendedor externo, competidor o bot
@@ -174,20 +253,13 @@ def detectar_intencion_especial(mensaje: str) -> str | None:
     Preguntar por disponibilidad o precio NO es intención de compra.
     Solo se detecta compra cuando el cliente expresa decisión de adquirir.
     """
-    mensaje_lower = mensaje.lower().strip()
+    mensaje_lower = normalizar_texto_simple(mensaje)
 
-    # Saludos — detectados antes que todo
-    # Evita que NIA busque productos cuando el cliente saluda
-    keywords_saludo = [
-        "hola", "buenos días", "buenos dias", "buenas tardes",
-        "buenas noches", "buenas", "hey", "buen día", "buen dia",
-        "hi", "hello", "good morning", "hola, buenos dias", "hola, buen día", "hola, buenas tardes", "hola, buenas noches"
-    ]
+    # Saludo puro primero. Si el mensaje trae intención comercial,
+    # esta regla no debe activarse.
+    if es_saludo_puro(mensaje):
+        return "saludo"
 
-    for kw in keywords_saludo:
-        if mensaje_lower == kw or mensaje_lower.startswith(kw + " ") or mensaje_lower.startswith(kw + ","):
-            return "saludo"
-        
     # Vendedores externos, competidores o bots
     # Detectados primero — tienen prioridad sobre todo lo demás
     keywords_bot = [
@@ -201,7 +273,7 @@ def detectar_intencion_especial(mensaje: str) -> str | None:
     keywords_compra = [
         "quiero comprar", "quiero cotizar", "me interesa comprarlo",
         "lo quiero pedir", "hacer un pedido", "orden de compra",
-        "cotización formal", "quiero la cotización",
+        "cotizacion formal", "quiero la cotizacion",
         "me lo pueden facturar", "proceder con la compra"
     ]
 
@@ -211,8 +283,8 @@ def detectar_intencion_especial(mensaje: str) -> str | None:
         "quiero hablar con alguien", "persona real", "humano",
         "ejecutivo comercial", "representante",
         "precio especial", "descuento", "negociar precio",
-        "garantía", "tiempo de entrega", "cuándo llega",
-        "despacho", "envío a"
+        "garantia", "tiempo de entrega", "cuando llega",
+        "despacho", "envio a"
     ]
 
     # Verificar en orden de prioridad
@@ -254,7 +326,6 @@ def decidir_accion(historial: list, preguntas_hechas: int) -> dict:
     3. Si respuesta tiene formato inesperado → BUSCAR con historial completo
     4. Si PREGUNTAR pero sin texto de pregunta → BUSCAR con historial
     """
-
     # Forzar búsqueda si ya se hicieron 3 preguntas — sin gastar tokens
     if preguntas_hechas >= 3:
         mensajes_cliente = [
@@ -266,6 +337,18 @@ def decidir_accion(historial: list, preguntas_hechas: int) -> dict:
     try:
         mensajes = [{"role": "system", "content": PROMPT_DECISION}] + historial
 
+        _registrar_traza_segura(
+            "decidir_accion.input",
+            {
+                "model": "gpt-4o-mini",
+                "temperature": 0.1,
+                "max_tokens": 150,
+                "preguntas_hechas": preguntas_hechas,
+                "historial": historial,
+                "prompt_decision": PROMPT_DECISION,
+            }
+        )
+
         response = get_ai_client().chat.completions.create(
             model="gpt-4o-mini",
             messages=mensajes,
@@ -273,8 +356,16 @@ def decidir_accion(historial: list, preguntas_hechas: int) -> dict:
             temperature=0.1,
         )
 
-        texto = response.choices[0].message.content.strip()
+        texto = (response.choices[0].message.content or "").strip()
         logger.info(f"Decisión IA raw: {texto[:150]}")
+
+        _registrar_traza_segura(
+            "decidir_accion.output",
+            {
+                "model": "gpt-4o-mini",
+                "raw_response": texto,
+            }
+        )
 
         # Parsear PREGUNTAR
         if "ACCION: PREGUNTAR" in texto:
@@ -314,6 +405,16 @@ def decidir_accion(historial: list, preguntas_hechas: int) -> dict:
 
     except Exception as e:
         logger.error(f"Error en decidir_accion: {e}")
+
+        _registrar_traza_segura(
+            "decidir_accion.error",
+            {
+                "error": str(e),
+                "preguntas_hechas": preguntas_hechas,
+                "historial": historial,
+            }
+        )
+
         # Fallback final — buscar con el último mensaje del cliente
         ultimo = next(
             (m["content"] for m in reversed(historial) if m["role"] == "user"),
@@ -360,6 +461,19 @@ def generar_recomendacion(historial: list, contexto_productos: str) -> str:
         {"role": "system", "content": instruccion_productos}
     ] + historial
 
+    _registrar_traza_segura(
+        "generar_recomendacion.input",
+        {
+            "model": "gpt-4o-mini",
+            "temperature": 0.3,
+            "max_tokens": 700,
+            "historial": historial,
+            "contexto_productos": contexto_productos,
+            "system_prompt": SYSTEM_PROMPT,
+            "instruccion_productos": instruccion_productos,
+        }
+    )
+
     try:
         response = get_ai_client().chat.completions.create(
             model="gpt-4o-mini",
@@ -367,10 +481,31 @@ def generar_recomendacion(historial: list, contexto_productos: str) -> str:
             max_tokens=700,
             temperature=0.3,
         )
-        return response.choices[0].message.content
+
+        respuesta = (response.choices[0].message.content or "").strip()
+
+        _registrar_traza_segura(
+            "generar_recomendacion.output",
+            {
+                "model": "gpt-4o-mini",
+                "respuesta_modelo": respuesta,
+            }
+        )
+
+        return respuesta
 
     except Exception as e:
         logger.error(f"Error en generar_recomendacion: {e}")
+
+        _registrar_traza_segura(
+            "generar_recomendacion.error",
+            {
+                "error": str(e),
+                "historial": historial,
+                "contexto_productos": contexto_productos,
+            }
+        )
+
         raise
 
 
