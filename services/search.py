@@ -4,9 +4,27 @@
 # Tanto el router de productos como el de chat usan este mismo
 # servicio — una sola fuente de verdad para buscar.
 #
+# VERSIÓN: 0.6
+# CAMBIOS v0.6:
+# - Observabilidad del ranking con logs SEARCH_TRACE
+# - score_relevancia() respaldado por evaluación detallada
+# - Se registra score total, score textual, bonus, penalizaciones
+# - Penalización fina para accesorios, repuestos y controladores
+#   cuando la búsqueda apunta a un equipo principal
+# - Se mantiene la interfaz pública de búsqueda y formato
+# - Mejor priorización por familias industriales
+#
+# VERSIÓN: 0.5
+# CAMBIOS v0.5:
+# - Score industrial más inteligente con boosts/penalizaciones
+# - Prioriza familias de producto correctas (válvula, bomba, sensor, etc.)
+# - Penaliza falsos positivos por similitud textual solamente
+# - Mantiene código exacto, VISIBLE_EN_LINEA y umbral mínimo
+# - Conserva la interfaz pública: buscar_productos() y formatear_producto()
+#
 # VERSIÓN: 0.4
 # CAMBIOS v0.4:
-# - Umbral mínimo de relevancia (UMBRAL_MINIMO = 45.0)
+# - Umbral mínimo de relevancia (UMBRAL_MINIMO = 60.0)
 # - Filtra resultados irrelevantes después de RapidFuzz
 # - Evita que búsquedas multimodales devuelvan productos no relacionados
 #
@@ -50,11 +68,14 @@
 # - Stock real por sede para informar disponibilidad al cliente
 # ============================================================
 
+import json
 import re
 import unicodedata
 import logging
 from datetime import datetime, timezone, timedelta
+
 from rapidfuzz import fuzz
+
 from .mongo import get_collection
 
 logger = logging.getLogger(__name__)
@@ -101,18 +122,97 @@ PROYECCION_PRODUCTO = {
 
 # ============================================================
 # UMBRAL MÍNIMO DE RELEVANCIA
-# Un score < 45 indica que el producto no tiene relación real
+# Un score < 60 indica que el producto no tiene relación real
 # con la búsqueda. Sin este filtro RapidFuzz acepta cualquier
 # cosa que pase el regex de MongoDB, generando resultados
 # irrelevantes especialmente en búsquedas multimodales.
-#
-# Valor calibrado empíricamente:
-# - < 45: producto irrelevante (medidores cuando se busca compresor)
-# - 45-65: coincidencia parcial aceptable
-# - > 65: coincidencia fuerte
-# - > 85: coincidencia muy precisa (código o referencia exacta)
 # ============================================================
 UMBRAL_MINIMO = 60.0
+
+
+# ============================================================
+# FAMILIAS INDUSTRIALES
+# Estas familias ayudan a distinguir el tipo de producto real.
+# La idea es evitar que una búsqueda de "válvula" termine
+# devolviendo una bomba solo porque ambas comparten "neumática".
+# ============================================================
+
+FAMILY_KEYWORDS = {
+    "valvula": [
+        "valvula", "valvulas", "electrovalvula", "electrovalvulas",
+        "solenoide", "solenoides", "valve"
+    ],
+    "bomba": [
+        "bomba", "bombas"
+    ],
+    "compresor": [
+        "compresor", "compresores"
+    ],
+    "sensor": [
+        "sensor", "sensores", "transmisor", "transmisores", "sonda", "sondas"
+    ],
+    "manometro": [
+        "manometro", "manometros", "vacuometro", "vacuometros",
+        "presostato", "presostatos"
+    ],
+    "medicion": [
+        "medidor", "medidores", "indicador", "indicadores", "contador", "contadores"
+    ],
+    "regulador": [
+        "regulador", "reguladores", "reductor", "reductores"
+    ],
+    "filtro": [
+        "filtro", "filtros"
+    ],
+    "cilindro": [
+        "cilindro", "cilindros", "actuador", "actuadores"
+    ],
+    "motor": [
+        "motor", "motores"
+    ],
+    "caudal": [
+        "caudal", "caudalimetro", "caudalimetros", "flowmeter"
+    ],
+    "temperatura": [
+        "temperatura", "termometro", "termometros", "termostato",
+        "termostatos", "termocupla", "termocuplas", "rtd"
+    ],
+    "presion": [
+        "presion", "pressure"
+    ],
+}
+
+
+# ============================================================
+# TIPOS SECUNDARIOS
+# Estos términos no suelen ser el producto principal buscado.
+# Sirven para penalizar resultados que son accesorios,
+# repuestos o controladores cuando el cliente busca un equipo base.
+# ============================================================
+
+SECONDARY_KEYWORDS = {
+    "accesorio": [
+        "accesorio", "accesorios"
+    ],
+    "repuesto": [
+        "repuesto", "repuestos", "refaccion", "refacciones"
+    ],
+    "controlador": [
+        "controlador", "controladores", "indicador", "indicadores"
+    ],
+    "kit": [
+        "kit", "kits"
+    ],
+    "spool": [
+        "spool"
+    ],
+    "bobina": [
+        "bobina", "bobinas"
+    ],
+    "acoplamiento": [
+        "acoplamiento", "acoplamientos"
+    ],
+}
 
 
 # ============================================================
@@ -124,8 +224,6 @@ def normalizar(texto: str) -> str:
     Convierte cualquier texto a minúsculas, sin acentos y sin
     espacios dobles.
     Ejemplo: 'Válvula   Neumática' → 'valvula neumatica'
-    Se aplica a la query del usuario y a los campos del producto
-    antes de comparar — evita fallos por tildes o mayúsculas.
     """
     texto = str(texto).lower().strip()
     texto = "".join(
@@ -146,6 +244,175 @@ def extraer_tokens(texto: str) -> list[str]:
     return list(dict.fromkeys(t for t in tokens if len(t) >= 2))
 
 
+def _texto_principal_doc(doc: dict) -> str:
+    """
+    Texto principal del producto para evaluar familia industrial.
+    Usamos principalmente nombre, categoría y referencias.
+    No usamos aplicaciones aquí para evitar clasificaciones engañosas.
+    """
+    partes = [
+        doc.get("DESCRIPCION_CORTA_PRE", ""),
+        doc.get("NIVEL_0", ""),
+        doc.get("NIVEL_1", ""),
+        doc.get("NIVEL_2", ""),
+        doc.get("NIVEL_3", ""),
+        doc.get("NIVEL_4", ""),
+        doc.get("REFERENCIA", ""),
+        doc.get("REF_ALTERNATIVA", ""),
+    ]
+    return normalizar(" ".join(str(p) for p in partes if p))
+
+
+def _detectar_familias(texto: str) -> set[str]:
+    """
+    Detecta familias industriales presentes en un texto.
+    """
+    texto_n = f" {normalizar(texto)} "
+    familias = set()
+
+    for familia, aliases in FAMILY_KEYWORDS.items():
+        for alias in aliases:
+            alias_n = f" {normalizar(alias)} "
+            if alias_n in texto_n:
+                familias.add(familia)
+                break
+
+    return familias
+
+
+def _detectar_tipos_secundarios(texto: str) -> set[str]:
+    """
+    Detecta si un texto apunta a accesorios, repuestos, kits,
+    controladores o elementos no principales.
+    """
+    texto_n = f" {normalizar(texto)} "
+    tipos = set()
+
+    for tipo, aliases in SECONDARY_KEYWORDS.items():
+        for alias in aliases:
+            alias_n = f" {normalizar(alias)} "
+            if alias_n in texto_n:
+                tipos.add(tipo)
+                break
+
+    return tipos
+
+
+def _bonus_por_coincidencias(qn: str, doc: dict, tokens: list[str]) -> float:
+    """
+    Calcula un bonus adicional por coincidencias más útiles:
+    - nombre del producto
+    - categorías
+    - referencias
+    - texto completo
+    """
+    nombre = normalizar(str(doc.get("DESCRIPCION_CORTA_PRE", "")))
+    referencias = normalizar(
+        f"{doc.get('REFERENCIA', '')} {doc.get('REF_ALTERNATIVA', '')}"
+    )
+    categorias = normalizar(
+        f"{doc.get('NIVEL_0', '')} {doc.get('NIVEL_1', '')} "
+        f"{doc.get('NIVEL_2', '')} {doc.get('NIVEL_3', '')} {doc.get('NIVEL_4', '')}"
+    )
+    texto_busqueda = normalizar(str(doc.get("texto_busqueda", "")))
+
+    bonus = 0.0
+
+    # Coincidencia exacta de frase
+    if qn and qn in nombre:
+        bonus += 8.0
+    if qn and qn in referencias:
+        bonus += 10.0
+    if qn and qn in categorias:
+        bonus += 6.0
+    if qn and qn in texto_busqueda:
+        bonus += 6.0
+
+    # Coincidencias por token con tope para no desbordar el score
+    bonus_tokens = 0.0
+    for token in tokens:
+        if token in nombre:
+            bonus_tokens += 3.0
+        if token in referencias:
+            bonus_tokens += 5.0
+        if token in categorias:
+            bonus_tokens += 2.0
+        if token in texto_busqueda:
+            bonus_tokens += 1.0
+
+    bonus += min(bonus_tokens, 15.0)
+
+    return bonus
+
+
+def _ajuste_por_familia(qn: str, doc: dict) -> float:
+    """
+    Ajusta el score según la familia industrial detectada.
+
+    - Si la consulta y el producto comparten familia -> bonus fuerte
+    - Si la consulta tiene familia clara pero el producto cae en otra -> penalización
+    """
+    familias_query = _detectar_familias(qn)
+    familias_doc = _detectar_familias(_texto_principal_doc(doc))
+
+    if not familias_query:
+        return 0.0
+
+    if familias_query & familias_doc:
+        return 18.0
+
+    if familias_doc:
+        return -22.0
+
+    return 0.0
+
+
+def _ajuste_por_tipo_secundario(qn: str, doc: dict) -> float:
+    """
+    Penaliza accesorios, repuestos, kits o controladores cuando la
+    consulta parece apuntar a un equipo principal.
+
+    Ejemplo:
+    - "compresor Hyundai" → controlador de temperatura debe bajar
+    - "electroválvula 24v" → spool / repuesto debe bajar
+    """
+    tipos_query = _detectar_tipos_secundarios(qn)
+    familias_query = _detectar_familias(qn)
+
+    # Si la consulta ya es explícitamente de accesorio/repuesto,
+    # no castigamos nada.
+    if tipos_query:
+        return 0.0
+
+    texto_doc = _texto_principal_doc(doc)
+    tipos_doc = _detectar_tipos_secundarios(texto_doc)
+
+    if not familias_query:
+        return 0.0
+
+    if not tipos_doc:
+        return 0.0
+
+    # Penalización base por ser secundario
+    penalizacion = -8.0
+
+    # Si la consulta es claramente de un equipo principal
+    # y el producto es accesorio/repuesto/controlador, la penalización sube.
+    if any(f in familias_query for f in ["valvula", "bomba", "compresor", "sensor", "manometro"]):
+        penalizacion -= 10.0
+
+    # Si el producto es "controlador" y la consulta pide compresor o válvula,
+    # queremos bajarlo más porque suele ser ruido.
+    if "controlador" in tipos_doc:
+        penalizacion -= 4.0
+
+    # Si es accesorio o repuesto, se penaliza un poco más.
+    if "accesorio" in tipos_doc or "repuesto" in tipos_doc or "kit" in tipos_doc:
+        penalizacion -= 4.0
+
+    return penalizacion
+
+
 # ============================================================
 # DETECCIÓN DE CÓDIGO VIA
 # ============================================================
@@ -158,21 +425,12 @@ def es_codigo_via(texto: str) -> bool:
     - P123456     → P mayúscula + números (más común)
     - P123456A    → P + números + letras
     - 123456      → solo números de 6+ dígitos
-
-    Esta detección permite que /chat busque por código exacto
-    cuando el cliente escribe una referencia directa, en lugar
-    de hacer búsqueda fuzzy que puede traer resultados incorrectos.
-
-    NO detecta referencias como '22UN73' o 'CUT-C20' — esas
-    se manejan correctamente con RapidFuzz en búsqueda normal.
     """
     texto = texto.strip()
 
-    # Formato P + alfanumérico (ej: P123456, P123456A)
     if re.match(r'^P[0-9]{4,}[A-Za-z0-9]*$', texto, re.IGNORECASE):
         return True
 
-    # Solo números de 6 o más dígitos (ej: 123456)
     if re.match(r'^\d{6,}$', texto):
         return True
 
@@ -187,13 +445,6 @@ def buscar_por_codigo_exacto(codigo: str) -> list[dict]:
     """
     Búsqueda exacta por código de producto usando el índice CODIGO.
     Más rápida y precisa que RapidFuzz para códigos conocidos.
-
-    NO filtra por VISIBLE_EN_LINEA — si el cliente o asesor
-    escribe un código exacto, sabe lo que busca. Filtrar productos
-    no visibles aquí podría confundir: el producto existe pero
-    NIA dice que no lo encuentra.
-
-    Retorna máximo 5 resultados para evitar duplicados en MongoDB.
     """
     try:
         resultados = list(get_collection().find(
@@ -210,33 +461,27 @@ def buscar_por_codigo_exacto(codigo: str) -> list[dict]:
 # SCORING DE RELEVANCIA
 # ============================================================
 
-def score_relevancia(q: str, doc: dict) -> float:
+def evaluar_relevancia(q: str, doc: dict) -> dict:
     """
-    Calcula qué tan relevante es un producto para la búsqueda.
-    Usa RapidFuzz — librería de similitud optimizada en C.
+    Devuelve el detalle completo del scoring de un producto.
 
-    CAMPOS USADOS PARA EL CÁLCULO:
-    - texto_busqueda: campo unificado construido por el ETL con toda
-      la información del producto concatenada. Es el campo principal.
-    - DESCRIPCION_CORTA_PRE: nombre del producto — peso alto
-    - REFERENCIA + REF_ALTERNATIVA: referencias técnicas — peso medio
-    - score_oportunidad: relevancia comercial de VIA — bonus
-
-    PESOS:
-    - token_set_ratio en texto_busqueda (35%): ignora orden de palabras
-    - partial_ratio en texto_busqueda (25%): detecta coincidencia parcial
-    - token_sort_ratio en nombre (20%): compara nombre ordenando palabras
-    - partial_ratio en referencias (15%): prioriza coincidencia exacta
-    - bonus score_oportunidad (5%): productos más rentables primero
-      (activo cuando llegue el Excel de Don Andrés)
+    Esto permite ver:
+    - score textual base
+    - bonus por coincidencias útiles
+    - ajuste por familia industrial
+    - penalización por accesorio/repuesto/controlador
+    - bonus comercial
+    - score final
     """
     qn = normalizar(q)
+    tokens = extraer_tokens(qn)
 
     texto_busqueda = normalizar(str(doc.get("texto_busqueda", "")))
-    nombre         = normalizar(str(doc.get("DESCRIPCION_CORTA_PRE", "")))
-    referencia     = normalizar(str(doc.get("REFERENCIA", "")))
-    ref_alt        = normalizar(str(doc.get("REF_ALTERNATIVA", "")))
+    nombre = normalizar(str(doc.get("DESCRIPCION_CORTA_PRE", "")))
+    referencia = normalizar(str(doc.get("REFERENCIA", "")))
+    ref_alt = normalizar(str(doc.get("REF_ALTERNATIVA", "")))
 
+    # Similitudes base
     s1 = fuzz.token_set_ratio(qn, texto_busqueda)
     s2 = fuzz.partial_ratio(qn, texto_busqueda)
     s3 = fuzz.token_sort_ratio(qn, nombre)
@@ -245,20 +490,55 @@ def score_relevancia(q: str, doc: dict) -> float:
         fuzz.partial_ratio(qn, ref_alt)
     )
 
-    score_base = (s1 * 0.35) + (s2 * 0.25) + (s3 * 0.20) + (s4 * 0.15)
+    score_textual = (s1 * 0.35) + (s2 * 0.25) + (s3 * 0.20) + (s4 * 0.15)
+
+    # Bonus extra por coincidencias más útiles
+    bonus_coincidencias = _bonus_por_coincidencias(qn, doc, tokens)
+
+    # Ajuste por familia industrial
+    ajuste_familia = _ajuste_por_familia(qn, doc)
+
+    # Penalización por tipo secundario cuando la consulta es de producto base
+    ajuste_secundario = _ajuste_por_tipo_secundario(qn, doc)
 
     # Bonus por score de oportunidad comercial
-    # Normalizado a escala 0-5 para no distorsionar el score principal
-    # Se activa cuando Don Andrés comparta el Excel con los scores
+    bonus_oportunidad = 0.0
     try:
         score_op = float(doc.get("score_oportunidad") or 0)
         if score_op > 0:
-            bonus = min(score_op / 100, 1.0) * 5
-            score_base += bonus
+            bonus_oportunidad = min(score_op / 100, 1.0) * 5
     except (ValueError, TypeError):
         pass
 
-    return round(score_base, 2)
+    score_total = max(
+        score_textual
+        + bonus_coincidencias
+        + ajuste_familia
+        + ajuste_secundario
+        + bonus_oportunidad,
+        0.0
+    )
+
+    return {
+        "score_total": round(score_total, 2),
+        "score_textual": round(score_textual, 2),
+        "bonus_coincidencias": round(bonus_coincidencias, 2),
+        "ajuste_familia": round(ajuste_familia, 2),
+        "ajuste_secundario": round(ajuste_secundario, 2),
+        "bonus_oportunidad": round(bonus_oportunidad, 2),
+        "s1_token_set": round(s1, 2),
+        "s2_partial_texto": round(s2, 2),
+        "s3_token_sort_nombre": round(s3, 2),
+        "s4_referencia": round(s4, 2),
+    }
+
+
+def score_relevancia(q: str, doc: dict) -> float:
+    """
+    Mantiene compatibilidad con el código anterior.
+    Retorna solo el score total.
+    """
+    return evaluar_relevancia(q, doc)["score_total"]
 
 
 # ============================================================
@@ -270,21 +550,12 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
     Función principal de búsqueda. Recibe texto libre del usuario
     y retorna lista de productos ordenados por relevancia.
 
-    DETECCIÓN DE CÓDIGO EXACTO:
-    Si el texto parece un código VIA (P123456, 123456) busca
-    directamente por código exacto usando el índice CODIGO.
-    Si no encuentra → fallback a búsqueda normal.
-
-    ESTRATEGIA EN DOS FASES (búsqueda normal):
-    1. MongoDB filtra candidatos con regex — rápido
-    2. RapidFuzz re-rankea — preciso
-
-    FILTROS ACTIVOS:
-    - VISIBLE_EN_LINEA: solo productos visibles al cliente
-    - UMBRAL_MINIMO: descarta productos con score < 45
+    Estrategia en dos fases:
+    1. MongoDB filtra candidatos con regex
+    2. RapidFuzz + boosts industriales reordenan y depuran
     """
     q_limpia = normalizar(mensaje)
-    tokens   = extraer_tokens(q_limpia)
+    tokens = extraer_tokens(q_limpia)
 
     if not tokens:
         return []
@@ -297,7 +568,6 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
         resultados_codigo = buscar_por_codigo_exacto(mensaje.strip())
         if resultados_codigo:
             return resultados_codigo
-        # Código no encontrado — continuar con búsqueda normal
         logger.info("Código no encontrado — fallback a búsqueda normal")
 
     # -------------------------------------------------------
@@ -305,12 +575,12 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
     # -------------------------------------------------------
     condiciones_busqueda = []
 
-    # Campos donde buscar — texto_busqueda primero por ser el más completo
     campos = [
         "texto_busqueda",
         "DESCRIPCION_CORTA_PRE",
         "DESCRIPCION_LARGA_PRE",
         "MARCA_LET",
+        "NIVEL_0",
         "NIVEL_1",
         "NIVEL_2",
         "NIVEL_3",
@@ -336,7 +606,6 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
                 campo: {"$regex": re.escape(token), "$options": "i"}
             })
 
-    # Filtro VISIBLE_EN_LINEA robusto — acepta True, 1, "1", "true"
     filtro_visible = {
         "VISIBLE_EN_LINEA": {"$in": [True, 1, "1", "true", "True"]}
     }
@@ -356,41 +625,90 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
         raise
 
     if not candidatos:
+        logger.info(
+            "[SEARCH_TRACE] %s",
+            json.dumps({
+                "query": mensaje,
+                "total_candidatos": 0,
+                "total_finales": 0,
+                "umbral": UMBRAL_MINIMO,
+                "top_resultados": []
+            }, ensure_ascii=False, default=str)
+        )
         return []
 
     # -------------------------------------------------------
-    # FASE 2: Re-ranking con RapidFuzz + score_oportunidad
-    # Calculamos el score una sola vez por documento
+    # FASE 2: Re-ranking con heurística industrial
     # -------------------------------------------------------
-    scored = [
-        (doc, score_relevancia(mensaje, doc))
-        for doc in candidatos
-    ]
-    scored.sort(key=lambda x: x[1], reverse=True)
+    scored = []
+    for doc in candidatos:
+        detalle = evaluar_relevancia(mensaje, doc)
+        doc["_score_nia"] = detalle["score_total"]
+        doc["_score_debug"] = detalle
+        scored.append((doc, detalle))
+
+    scored.sort(key=lambda x: x[1]["score_total"], reverse=True)
 
     # -------------------------------------------------------
     # FILTRO DE UMBRAL MÍNIMO
-    # Descarta productos con score bajo que pasaron el regex
-    # pero no tienen relación real con la búsqueda.
-    # Crítico para búsquedas multimodales donde el query
-    # puede ser muy específico (marca + modelo + referencia).
     # -------------------------------------------------------
-    scored = [(doc, score) for doc, score in scored if score >= UMBRAL_MINIMO]
+    scored = [(doc, detalle) for doc, detalle in scored if detalle["score_total"] >= UMBRAL_MINIMO]
 
     if not scored:
         logger.info(f"Sin resultados por encima del umbral {UMBRAL_MINIMO} para: {mensaje}")
+        logger.info(
+            "[SEARCH_TRACE] %s",
+            json.dumps({
+                "query": mensaje,
+                "total_candidatos": len(candidatos),
+                "total_finales": 0,
+                "umbral": UMBRAL_MINIMO,
+                "top_resultados": []
+            }, ensure_ascii=False, default=str)
+        )
         return []
 
+    # -------------------------------------------------------
     # Eliminar duplicados manteniendo el de mayor score
-    vistos     = set()
+    # -------------------------------------------------------
+    vistos = set()
     resultados = []
 
-    for doc, score in scored:
+    for doc, detalle in scored:
         clave = (doc.get("CODIGO"), doc.get("DESCRIPCION_CORTA_PRE"))
         if clave not in vistos:
             vistos.add(clave)
-            doc["_score_nia"] = score
+            doc["_score_nia"] = detalle["score_total"]
+            doc["_score_debug"] = detalle
             resultados.append(doc)
+
+    # -------------------------------------------------------
+    # LOG DE TRAZABILIDAD DEL RANKING
+    # -------------------------------------------------------
+    top_debug = []
+    for doc in resultados[:5]:
+        debug = doc.get("_score_debug", {})
+        top_debug.append({
+            "codigo": doc.get("CODIGO", ""),
+            "nombre": doc.get("DESCRIPCION_CORTA_PRE", ""),
+            "score_total": debug.get("score_total"),
+            "score_textual": debug.get("score_textual"),
+            "bonus_coincidencias": debug.get("bonus_coincidencias"),
+            "ajuste_familia": debug.get("ajuste_familia"),
+            "ajuste_secundario": debug.get("ajuste_secundario"),
+            "bonus_oportunidad": debug.get("bonus_oportunidad"),
+        })
+
+    logger.info(
+        "[SEARCH_TRACE] %s",
+        json.dumps({
+            "query": mensaje,
+            "total_candidatos": len(candidatos),
+            "total_finales": len(resultados),
+            "umbral": UMBRAL_MINIMO,
+            "top_resultados": top_debug,
+        }, ensure_ascii=False, default=str)
+    )
 
     return resultados[:limit]
 
@@ -404,30 +722,6 @@ def formatear_producto(p: dict) -> dict:
     Normaliza la estructura de salida de cada producto.
     Es el contrato entre el backend y el frontend/NIA.
     Cualquier cambio aquí afecta toda la API.
-
-    PRECIO — Regla de negocio (Andrés Valencia, Dirección General):
-    Solo se muestra si PV_FECHA tiene menos de 12 meses.
-    Si tiene más de 12 meses sin actualizar → "Consultarnos".
-    Si no tiene fecha → "Consultarnos".
-
-    STOCK — Disponibilidad real por sede:
-    Se informa por Bogotá y Cali por separado.
-    Si no hay stock en ninguna sede → "Consultar disponibilidad".
-
-    TIEMPO DE ENTREGA:
-    Viene del campo EXISTENCIA de SQL Server.
-    Texto libre: "1 DIAS", "15 DIAS", "5 SEMANAS".
-    Se muestra tal como viene de la base de datos.
-
-    JERARQUÍA — 4 niveles completos:
-    Permite al frontend mostrar la ubicación exacta del producto
-    en el catálogo de VIA Industrial.
-
-    CARACTERÍSTICAS TÉCNICAS:
-    Array de pares título/valor para preguntas técnicas de NIA.
-
-    EQUIVALENTES:
-    Referencias alternativas cuando el producto no tiene stock.
     """
 
     # -------------------------------------------------------
@@ -435,7 +729,7 @@ def formatear_producto(p: dict) -> dict:
     # -------------------------------------------------------
     precio_fmt = "Consultarnos"
     precio_raw = p.get("PRECIO_VENTA")
-    pv_fecha   = p.get("PV_FECHA")
+    pv_fecha = p.get("PV_FECHA")
 
     if precio_raw and pv_fecha:
         try:
@@ -447,7 +741,7 @@ def formatear_producto(p: dict) -> dict:
             if fecha_precio.tzinfo is None:
                 fecha_precio = fecha_precio.replace(tzinfo=timezone.utc)
 
-            ahora         = datetime.now(timezone.utc)
+            ahora = datetime.now(timezone.utc)
             hace_12_meses = ahora - timedelta(days=365)
 
             if fecha_precio >= hace_12_meses:
@@ -459,14 +753,16 @@ def formatear_producto(p: dict) -> dict:
     # -------------------------------------------------------
     # 2. Calcular disponibilidad de stock por sede
     # -------------------------------------------------------
-    stock_bog   = float(p.get("STOCK_BOG")   or 0)
-    stock_cali  = float(p.get("STOCK_CALI")  or 0)
+    stock_bog = float(p.get("STOCK_BOG") or 0)
+    stock_cali = float(p.get("STOCK_CALI") or 0)
     stock_total = float(p.get("STOCK_TOTAL") or 0)
 
     if stock_bog > 0 or stock_cali > 0:
         sedes = []
-        if stock_bog  > 0: sedes.append(f"Bogotá ({int(stock_bog)} und)")
-        if stock_cali > 0: sedes.append(f"Cali ({int(stock_cali)} und)")
+        if stock_bog > 0:
+            sedes.append(f"Bogotá ({int(stock_bog)} und)")
+        if stock_cali > 0:
+            sedes.append(f"Cali ({int(stock_cali)} und)")
         disponibilidad = f"Disponible en {', '.join(sedes)}"
     elif stock_total > 0:
         disponibilidad = f"Disponible ({int(stock_total)} und)"
@@ -493,14 +789,14 @@ def formatear_producto(p: dict) -> dict:
 
     return {
         # Identificación
-        "codigo":          str(p.get("CODIGO",          "")).strip(),
-        "referencia":      str(p.get("REFERENCIA",      "")).strip(),
+        "codigo":          str(p.get("CODIGO", "")).strip(),
+        "referencia":      str(p.get("REFERENCIA", "")).strip(),
         "ref_alternativa": str(p.get("REF_ALTERNATIVA", "")).strip(),
 
         # Descripción
         "nombre":      str(p.get("DESCRIPCION_CORTA_PRE", "")).strip(),
         "descripcion": str(p.get("DESCRIPCION_LARGA_PRE", "")).strip()[:300],
-        "marca":       str(p.get("MARCA_LET",             "")).strip(),
+        "marca":       str(p.get("MARCA_LET", "")).strip(),
 
         # Jerarquía completa VIA Industrial
         "nivel_0": str(p.get("NIVEL_0", "")).strip(),
@@ -510,16 +806,16 @@ def formatear_producto(p: dict) -> dict:
         "nivel_4": str(p.get("NIVEL_4", "")).strip(),
 
         # Comercial
-        "precio":          precio_fmt,
-        "disponibilidad":  disponibilidad,
-        "tiempo_entrega":  str(p.get("EXISTENCIA", "")).strip(),
+        "precio":         precio_fmt,
+        "disponibilidad": disponibilidad,
+        "tiempo_entrega": str(p.get("EXISTENCIA", "")).strip(),
 
         # Técnico
         "caracteristicas": caracteristicas,
         "aplicaciones":    str(p.get("APLICACIONES", "")).strip(),
 
         # Equivalentes
-        "equivalente":   str(p.get("EQUIVALENTE",   "")).strip(),
+        "equivalente":   str(p.get("EQUIVALENTE", "")).strip(),
         "equivalente_2": str(p.get("EQUIVALENTE_2", "")).strip(),
 
         # Físico
