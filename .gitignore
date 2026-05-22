@@ -63,7 +63,7 @@ test_conexion_sql.py
 # ============================================================
 .ipynb_checkpoints/
 *.ipynb
-
+salidas_nia_logs/
 
 # ============================================================
 # ARCHIVOS TEMPORALES
