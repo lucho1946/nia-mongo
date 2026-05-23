@@ -4,27 +4,15 @@
 # Tanto el router de productos como el de chat usan este mismo
 # servicio — una sola fuente de verdad para buscar.
 #
-# VERSIÓN: 0.7
-# CAMBIOS v0.7:
-# - Integra score_nia aplicado desde Excel de Don Andrés.
-# - score_nia se usa como bonus comercial controlado.
-# - Se mantiene prioridad técnica: familia, marca, referencia,
-#   compatibilidad y relevancia textual siguen siendo la base.
-# - Se agrega trazabilidad del score comercial en SEARCH_TRACE.
-# - Se expone score_nia en formatear_producto().
-#
-# CAMPOS REALES EN MONGODB:
-#   CODIGO, REFERENCIA, REF_ALTERNATIVA
-#   DESCRIPCION_CORTA_PRE, DESCRIPCION_LARGA_PRE
-#   MARCA_LET, PRECIO_VENTA, PV_FECHA
-#   NIVEL_0, NIVEL_1, NIVEL_2, NIVEL_3, NIVEL_4
-#   CARACTERISTICAS, APLICACIONES
-#   STOCK_BOG, STOCK_CALI, STOCK_TOTAL
-#   EQUIVALENTE, EQUIVALENTE_2
-#   DIMENSION, PESO, VISIBLE_EN_LINEA
-#   EXISTENCIA, texto_busqueda
-#   score_oportunidad, tipo_sku
-#   score_nia, score_source, score_version, score_updated_at
+# VERSIÓN: 0.9
+# CAMBIOS v0.9:
+# - Mantiene score_nia como bonus comercial controlado.
+# - Agrega familia industrial "variador".
+# - Penaliza productos de proceso/cárnicos cuando el usuario pide
+#   un variador eléctrico.
+# - Penaliza accesorios de variador: display, teclado, panel, LCP,
+#   tarjeta, módulo, cable, interfaz, comunicación, etc.
+# - Evita recomendar accesorios como si fueran el equipo principal.
 #
 # REGLAS DE NEGOCIO:
 # - products_catalog = fuente de verdad de productos reales.
@@ -32,7 +20,7 @@
 # - Precio condicionado a PV_FECHA ≤ 12 meses.
 # - Solo productos con VISIBLE_EN_LINEA activo en búsqueda normal.
 # - Búsqueda por código exacto ignora VISIBLE_EN_LINEA.
-# - Jerarquía completa en respuesta para frontend y NIA.
+# - NIA debe preferir no recomendar antes que recomendar incompatible.
 # ============================================================
 
 import json
@@ -82,7 +70,7 @@ PROYECCION_PRODUCTO = {
     "score_oportunidad":     1,
     "tipo_sku":              1,
 
-    # Scoring comercial de Don Andrés.
+    # Scoring comercial aplicado desde Excel de Don Andrés.
     "score_nia":             1,
     "score_source":          1,
     "score_version":         1,
@@ -102,7 +90,6 @@ UMBRAL_MINIMO = 60.0
 # ============================================================
 # score_nia NO debe dominar la búsqueda.
 # Sirve para ordenar mejor productos ya relevantes.
-# Máximo bonus comercial: 12 puntos sobre el ranking total.
 # ============================================================
 
 MAX_BONUS_SCORE_NIA = 12.0
@@ -145,6 +132,10 @@ FAMILY_KEYWORDS = {
     "motor": [
         "motor", "motores"
     ],
+    "variador": [
+        "variador", "variadores", "inversor", "inversores",
+        "drive", "drives", "vfd", "frecuencia"
+    ],
     "caudal": [
         "caudal", "caudalimetro", "caudalimetros", "flowmeter"
     ],
@@ -185,6 +176,66 @@ SECONDARY_KEYWORDS = {
         "acoplamiento", "acoplamientos"
     ],
 }
+
+
+# ============================================================
+# PRODUCTOS DE PROCESO QUE NO DEBEN SUBIR CUANDO EL USUARIO
+# PIDE UN COMPONENTE ELÉCTRICO COMO VARIADOR.
+# ============================================================
+
+PROCESS_EQUIPMENT_KEYWORDS = [
+    "cutter",
+    "carnico",
+    "cárnico",
+    "mezclador",
+    "licuadora",
+    "procesador",
+    "amasadora",
+    "molino",
+    "tajadora",
+    "empacadora",
+    "selladora",
+    "horno",
+    "batidora",
+    "picadora",
+    "sierra",
+    "freidora",
+]
+
+
+# ============================================================
+# ACCESORIOS DE VARIADORES
+# ============================================================
+# Estos términos indican que el producto probablemente NO es el
+# variador principal, sino un accesorio, repuesto, interfaz,
+# tarjeta, display o elemento complementario.
+# ============================================================
+
+DRIVE_ACCESSORY_KEYWORDS = [
+    "display",
+    "teclado",
+    "panel",
+    "lcp",
+    "interfaz",
+    "interface",
+    "tarjeta",
+    "modulo",
+    "módulo",
+    "controlador",
+    "repuesto",
+    "accesorio",
+    "adaptador",
+    "comunicacion",
+    "comunicación",
+    "profibus",
+    "profinet",
+    "ethernet",
+    "cable",
+    "conector",
+    "membrana",
+    "fuente",
+    "terminal",
+]
 
 
 # ============================================================
@@ -275,6 +326,13 @@ def _detectar_marcas_conocidas(texto: str) -> set[str]:
 def _texto_principal_doc(doc: dict) -> str:
     """
     Texto principal del producto para evaluar familia industrial.
+
+    Importante:
+    No usamos DESCRIPCION_LARGA_PRE aquí porque puede contener usos,
+    aplicaciones o componentes internos que confunden la familia real.
+    Ejemplo:
+    - Un cutter cárnico puede decir "variador de velocidad" en la
+      descripción larga, pero no es un variador eléctrico.
     """
     partes = [
         doc.get("DESCRIPCION_CORTA_PRE", ""),
@@ -435,6 +493,9 @@ def _bonus_marca_y_familia(qn: str, doc: dict) -> float:
 def _ajuste_por_familia(qn: str, doc: dict) -> float:
     """
     Ajuste fuerte por coherencia de familia industrial.
+
+    Si el usuario pide una familia clara, productos de otra familia
+    bajan fuerte. Esto evita incompatibilidades comerciales.
     """
     familias_query = _detectar_familias(qn)
     familias_doc = _detectar_familias(_texto_principal_doc(doc))
@@ -473,7 +534,10 @@ def _ajuste_por_tipo_secundario(qn: str, doc: dict) -> float:
 
     penalizacion = -8.0
 
-    if any(f in familias_query for f in ["valvula", "bomba", "compresor", "sensor", "manometro"]):
+    if any(
+        f in familias_query
+        for f in ["valvula", "bomba", "compresor", "sensor", "manometro", "variador"]
+    ):
         penalizacion -= 10.0
 
     if "controlador" in tipos_doc:
@@ -483,6 +547,57 @@ def _ajuste_por_tipo_secundario(qn: str, doc: dict) -> float:
         penalizacion -= 4.0
 
     return penalizacion
+
+
+def _ajuste_por_incompatibilidad_contextual(qn: str, doc: dict) -> float:
+    """
+    Penaliza productos que contienen palabras coincidentes,
+    pero no representan el equipo solicitado.
+
+    Casos detectados:
+    1. Usuario pide: "variador 3hp 220v"
+       Producto incorrecto: cutter cárnico con variador interno.
+
+    2. Usuario pide: "variador 3hp 220v"
+       Producto incorrecto: display / teclado / panel para variador.
+
+    Regla:
+    - Si la consulta pide variador, bajamos equipos de proceso.
+    - Si la consulta pide variador principal, bajamos accesorios.
+    """
+    familias_query = _detectar_familias(qn)
+
+    if "variador" not in familias_query:
+        return 0.0
+
+    texto_doc = _texto_principal_doc(doc)
+    descripcion_larga = normalizar(str(doc.get("DESCRIPCION_LARGA_PRE", "")))
+    texto_busqueda = normalizar(str(doc.get("texto_busqueda", "")))
+
+    texto_completo = f"{texto_doc} {descripcion_larga} {texto_busqueda}"
+
+    # --------------------------------------------------------
+    # 1. Penalizar equipos de proceso que solo mencionan variador
+    # --------------------------------------------------------
+    for keyword in PROCESS_EQUIPMENT_KEYWORDS:
+        if normalizar(keyword) in texto_completo:
+            return -55.0
+
+    # --------------------------------------------------------
+    # 2. Penalizar accesorios de variador
+    # --------------------------------------------------------
+    # Si el usuario pidió variador principal, pero el producto es
+    # display, teclado, panel, LCP, tarjeta, módulo o cable,
+    # no debe recomendarse como variador.
+    tipos_query = _detectar_tipos_secundarios(qn)
+    usuario_pide_accesorio = bool(tipos_query)
+
+    if not usuario_pide_accesorio:
+        for keyword in DRIVE_ACCESSORY_KEYWORDS:
+            if normalizar(keyword) in texto_completo:
+                return -70.0
+
+    return 0.0
 
 
 def _bonus_score_oportunidad(doc: dict) -> float:
@@ -513,8 +628,6 @@ def _bonus_score_nia(doc: dict) -> float:
     if score_nia <= 0:
         return 0.0
 
-    # Asumimos escala 0-100.
-    # Si en algún caso supera 100, se limita para no romper ranking.
     normalized = min(score_nia, 100.0) / 100.0
 
     return normalized * MAX_BONUS_SCORE_NIA
@@ -574,6 +687,7 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
     - marca + familia
     - familia industrial
     - penalización por tipo secundario
+    - penalización por incompatibilidad contextual
     - score_oportunidad
     - score_nia comercial
     """
@@ -602,6 +716,7 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
     bonus_marca_familia = _bonus_marca_y_familia(qn, doc)
     ajuste_familia = _ajuste_por_familia(qn, doc)
     ajuste_secundario = _ajuste_por_tipo_secundario(qn, doc)
+    ajuste_incompatibilidad = _ajuste_por_incompatibilidad_contextual(qn, doc)
 
     # Bonus comercial.
     bonus_oportunidad = _bonus_score_oportunidad(doc)
@@ -615,6 +730,7 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
         + ajuste_marca
         + ajuste_familia
         + ajuste_secundario
+        + ajuste_incompatibilidad
         + bonus_oportunidad
         + bonus_score_nia,
         0.0
@@ -631,9 +747,10 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
         "ajuste_marca": round(ajuste_marca, 2),
         "ajuste_familia": round(ajuste_familia, 2),
         "ajuste_secundario": round(ajuste_secundario, 2),
+        "ajuste_incompatibilidad": round(ajuste_incompatibilidad, 2),
         "bonus_oportunidad": round(bonus_oportunidad, 2),
 
-        # Nuevo scoring comercial.
+        # Score comercial.
         "score_nia_raw": round(score_nia_raw, 4),
         "bonus_score_nia": round(bonus_score_nia, 2),
 
@@ -818,9 +935,8 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
             "ajuste_marca": debug.get("ajuste_marca"),
             "ajuste_familia": debug.get("ajuste_familia"),
             "ajuste_secundario": debug.get("ajuste_secundario"),
+            "ajuste_incompatibilidad": debug.get("ajuste_incompatibilidad"),
             "bonus_oportunidad": debug.get("bonus_oportunidad"),
-
-            # Nuevo debug comercial.
             "score_nia_raw": debug.get("score_nia_raw"),
             "bonus_score_nia": debug.get("bonus_score_nia"),
             "score_source": doc.get("score_source"),
@@ -970,13 +1086,12 @@ def formatear_producto(p: dict) -> dict:
         "score_oportunidad": score_op,
         "tipo_sku":          str(p.get("tipo_sku", "")).strip(),
 
-        # Nuevo score comercial de Don Andrés
+        # Score comercial de Don Andrés
         "score_nia":         score_nia,
         "score_source":      str(p.get("score_source", "")).strip(),
         "score_version":     str(p.get("score_version", "")).strip(),
 
         # Debug interno útil para pruebas.
-        # El frontend puede ignorarlo si no lo necesita.
         "_score_nia":        p.get("_score_nia"),
         "_score_debug":      p.get("_score_debug"),
     }
