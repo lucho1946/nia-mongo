@@ -110,7 +110,7 @@ htmlcov/
 node_modules/
 dist/
 build/
-
+uploads/
 
 # ============================================================
 # AZURE / DEPLOY
