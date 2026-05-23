@@ -4,36 +4,35 @@
 # Tanto el router de productos como el de chat usan este mismo
 # servicio — una sola fuente de verdad para buscar.
 #
-# VERSIÓN: 0.6
-# CAMBIOS v0.6:
-# - Observabilidad del ranking con logs SEARCH_TRACE
-# - score_relevancia() respaldado por evaluación detallada
-# - Se registra score total, score textual, bonus, penalizaciones
-# - Penalización fina para accesorios, repuestos y controladores
-#   cuando la búsqueda apunta a un equipo principal
-# - Se mantiene la interfaz pública de búsqueda y formato
-# - Mejor priorización por familias industriales
+# VERSIÓN: 0.7
+# CAMBIOS v0.7:
+# - Integra score_nia aplicado desde Excel de Don Andrés.
+# - score_nia se usa como bonus comercial controlado.
+# - Se mantiene prioridad técnica: familia, marca, referencia,
+#   compatibilidad y relevancia textual siguen siendo la base.
+# - Se agrega trazabilidad del score comercial en SEARCH_TRACE.
+# - Se expone score_nia en formatear_producto().
 #
-# CAMPOS REALES EN MONGODB (vienen del ETL de SQL Server):
+# CAMPOS REALES EN MONGODB:
 #   CODIGO, REFERENCIA, REF_ALTERNATIVA
 #   DESCRIPCION_CORTA_PRE, DESCRIPCION_LARGA_PRE
 #   MARCA_LET, PRECIO_VENTA, PV_FECHA
 #   NIVEL_0, NIVEL_1, NIVEL_2, NIVEL_3, NIVEL_4
-#   CARACTERISTICAS (array de pares titulo/valor)
-#   APLICACIONES
+#   CARACTERISTICAS, APLICACIONES
 #   STOCK_BOG, STOCK_CALI, STOCK_TOTAL
 #   EQUIVALENTE, EQUIVALENTE_2
 #   DIMENSION, PESO, VISIBLE_EN_LINEA
-#   EXISTENCIA (tiempo estimado de entrega)
-#   texto_busqueda (campo unificado construido por ETL)
-#   score_oportunidad, tipo_sku (cuando llegue Excel de Don Andrés)
+#   EXISTENCIA, texto_busqueda
+#   score_oportunidad, tipo_sku
+#   score_nia, score_source, score_version, score_updated_at
 #
 # REGLAS DE NEGOCIO:
-# - Precio condicionado a PV_FECHA ≤ 12 meses (Andrés Valencia)
-# - Solo productos con VISIBLE_EN_LINEA activo en búsqueda normal
-# - Búsqueda por código exacto ignora VISIBLE_EN_LINEA
-# - Jerarquía completa en respuesta para frontend y NIA
-# - Stock real por sede para informar disponibilidad al cliente
+# - products_catalog = fuente de verdad de productos reales.
+# - score_nia = prioridad comercial, no reemplaza compatibilidad.
+# - Precio condicionado a PV_FECHA ≤ 12 meses.
+# - Solo productos con VISIBLE_EN_LINEA activo en búsqueda normal.
+# - Búsqueda por código exacto ignora VISIBLE_EN_LINEA.
+# - Jerarquía completa en respuesta para frontend y NIA.
 # ============================================================
 
 import json
@@ -51,9 +50,6 @@ logger = logging.getLogger(__name__)
 
 # ============================================================
 # PROYECCIÓN ESTÁNDAR
-# Centralizada aquí para que buscar_productos y
-# buscar_por_codigo_exacto usen exactamente los mismos campos.
-# Si se agrega un campo nuevo solo se cambia aquí.
 # ============================================================
 
 PROYECCION_PRODUCTO = {
@@ -85,24 +81,35 @@ PROYECCION_PRODUCTO = {
     "texto_busqueda":        1,
     "score_oportunidad":     1,
     "tipo_sku":              1,
+
+    # Scoring comercial de Don Andrés.
+    "score_nia":             1,
+    "score_source":          1,
+    "score_version":         1,
+    "score_updated_at":      1,
 }
 
 
 # ============================================================
 # UMBRAL MÍNIMO DE RELEVANCIA
-# Un score < 60 indica que el producto no tiene relación real
-# con la búsqueda. Sin este filtro RapidFuzz acepta cualquier
-# cosa que pase el regex de MongoDB, generando resultados
-# irrelevantes especialmente en búsquedas multimodales.
 # ============================================================
+
 UMBRAL_MINIMO = 60.0
 
 
 # ============================================================
+# CONFIGURACIÓN DE SCORE COMERCIAL
+# ============================================================
+# score_nia NO debe dominar la búsqueda.
+# Sirve para ordenar mejor productos ya relevantes.
+# Máximo bonus comercial: 12 puntos sobre el ranking total.
+# ============================================================
+
+MAX_BONUS_SCORE_NIA = 12.0
+
+
+# ============================================================
 # FAMILIAS INDUSTRIALES
-# Estas familias ayudan a distinguir el tipo de producto real.
-# La idea es evitar que una búsqueda de "válvula" termine
-# devolviendo una bomba solo porque ambas comparten "neumática".
 # ============================================================
 
 FAMILY_KEYWORDS = {
@@ -153,9 +160,6 @@ FAMILY_KEYWORDS = {
 
 # ============================================================
 # TIPOS SECUNDARIOS
-# Estos términos no suelen ser el producto principal buscado.
-# Sirven para penalizar resultados que son accesorios,
-# repuestos o controladores cuando el cliente busca un equipo base.
 # ============================================================
 
 SECONDARY_KEYWORDS = {
@@ -181,6 +185,7 @@ SECONDARY_KEYWORDS = {
         "acoplamiento", "acoplamientos"
     ],
 }
+
 
 # ============================================================
 # MARCAS INDUSTRIALES PRIORITARIAS
@@ -214,6 +219,7 @@ KNOWN_BRANDS = {
     "via",
 }
 
+
 # ============================================================
 # UTILIDADES DE TEXTO
 # ============================================================
@@ -222,7 +228,6 @@ def normalizar(texto: str) -> str:
     """
     Convierte cualquier texto a minúsculas, sin acentos y sin
     espacios dobles.
-    Ejemplo: 'Válvula   Neumática' → 'valvula neumatica'
     """
     texto = str(texto).lower().strip()
     texto = "".join(
@@ -235,21 +240,26 @@ def normalizar(texto: str) -> str:
 def extraer_tokens(texto: str) -> list[str]:
     """
     Divide el texto en palabras clave individuales.
-    Ejemplo: 'valvula neumatica 1/2' → ['valvula', 'neumatica', '1/2']
-    Descarta tokens de menos de 2 caracteres y elimina duplicados
-    manteniendo el orden original.
     """
     tokens = re.findall(r"[a-zA-Z0-9\-\.\/]+", normalizar(texto))
     return list(dict.fromkeys(t for t in tokens if len(t) >= 2))
 
+
+def _safe_float(value, default: float = 0.0) -> float:
+    """
+    Convierte valores numéricos de MongoDB a float seguro.
+    """
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
 def _detectar_marcas_conocidas(texto: str) -> set[str]:
     """
     Detecta marcas conocidas dentro de un texto normalizado.
-    Se usa búsqueda por substring para soportar variantes como:
-    - ema-electronic
-    - siemens
-    - pixsys
-    - dayton
     """
     texto_n = f" {normalizar(texto)} "
     marcas = set()
@@ -265,8 +275,6 @@ def _detectar_marcas_conocidas(texto: str) -> set[str]:
 def _texto_principal_doc(doc: dict) -> str:
     """
     Texto principal del producto para evaluar familia industrial.
-    Usamos principalmente nombre, categoría y referencias.
-    No usamos aplicaciones aquí para evitar clasificaciones engañosas.
     """
     partes = [
         doc.get("DESCRIPCION_CORTA_PRE", ""),
@@ -300,8 +308,8 @@ def _detectar_familias(texto: str) -> set[str]:
 
 def _detectar_tipos_secundarios(texto: str) -> set[str]:
     """
-    Detecta si un texto apunta a accesorios, repuestos, kits,
-    controladores o elementos no principales.
+    Detecta si un texto apunta a accesorios, repuestos, kits
+    o elementos no principales.
     """
     texto_n = f" {normalizar(texto)} "
     tipos = set()
@@ -316,13 +324,13 @@ def _detectar_tipos_secundarios(texto: str) -> set[str]:
     return tipos
 
 
+# ============================================================
+# BONUSES Y AJUSTES DE RANKING
+# ============================================================
+
 def _bonus_por_coincidencias(qn: str, doc: dict, tokens: list[str]) -> float:
     """
-    Calcula un bonus adicional por coincidencias más útiles:
-    - nombre del producto
-    - categorías
-    - referencias
-    - texto completo
+    Calcula bonus adicional por coincidencias útiles.
     """
     nombre = normalizar(str(doc.get("DESCRIPCION_CORTA_PRE", "")))
     referencias = normalizar(
@@ -336,7 +344,6 @@ def _bonus_por_coincidencias(qn: str, doc: dict, tokens: list[str]) -> float:
 
     bonus = 0.0
 
-    # Coincidencia exacta de frase
     if qn and qn in nombre:
         bonus += 8.0
     if qn and qn in referencias:
@@ -346,8 +353,8 @@ def _bonus_por_coincidencias(qn: str, doc: dict, tokens: list[str]) -> float:
     if qn and qn in texto_busqueda:
         bonus += 6.0
 
-    # Coincidencias por token con tope para no desbordar el score
     bonus_tokens = 0.0
+
     for token in tokens:
         if token in nombre:
             bonus_tokens += 3.0
@@ -362,10 +369,10 @@ def _bonus_por_coincidencias(qn: str, doc: dict, tokens: list[str]) -> float:
 
     return bonus
 
+
 def _bonus_por_marca(qn: str, doc: dict) -> float:
     """
-    Prioriza productos cuya marca coincide explícitamente
-    con la intención del usuario.
+    Prioriza productos cuya marca coincide explícitamente.
     """
     marcas_query = _detectar_marcas_conocidas(qn)
     marcas_doc = _detectar_marcas_conocidas(str(doc.get("MARCA_LET", "")))
@@ -382,7 +389,7 @@ def _bonus_por_marca(qn: str, doc: dict) -> float:
 def _ajuste_por_marca(qn: str, doc: dict) -> float:
     """
     Penaliza productos cuya marca no coincide cuando el usuario
-    sí especificó una marca conocida.
+    especificó una marca conocida.
     """
     marcas_query = _detectar_marcas_conocidas(qn)
     marcas_doc = _detectar_marcas_conocidas(str(doc.get("MARCA_LET", "")))
@@ -403,10 +410,8 @@ def _bonus_marca_y_familia(qn: str, doc: dict) -> float:
     """
     Prioridad industrial contextual.
 
-    Reglas:
-    - Marca + familia coinciden → bonus fuerte
-    - Marca coincide pero familia NO → penalización ligera
-    - Familia coincide pero marca NO → neutral
+    Marca + familia coinciden → bonus fuerte.
+    Marca coincide pero familia no → penalización ligera.
     """
     marcas_query = _detectar_marcas_conocidas(qn)
     marcas_doc = _detectar_marcas_conocidas(str(doc.get("MARCA_LET", "")))
@@ -430,14 +435,6 @@ def _bonus_marca_y_familia(qn: str, doc: dict) -> float:
 def _ajuste_por_familia(qn: str, doc: dict) -> float:
     """
     Ajuste fuerte por coherencia de familia industrial.
-
-    Objetivo:
-    - Si el usuario pide MOTOR → priorizar motores reales
-    - Si pide SENSOR → priorizar sensores reales
-    - Si pide VALVULA → priorizar válvulas reales
-
-    Esto evita que una marca correcta pero de otra categoría
-    suba artificialmente en el ranking.
     """
     familias_query = _detectar_familias(qn)
     familias_doc = _detectar_familias(_texto_principal_doc(doc))
@@ -456,18 +453,12 @@ def _ajuste_por_familia(qn: str, doc: dict) -> float:
 
 def _ajuste_por_tipo_secundario(qn: str, doc: dict) -> float:
     """
-    Penaliza accesorios, repuestos, kits o controladores cuando la
-    consulta parece apuntar a un equipo principal.
-
-    Ejemplo:
-    - "compresor Hyundai" → controlador de temperatura debe bajar
-    - "electroválvula 24v" → spool / repuesto debe bajar
+    Penaliza accesorios, repuestos, kits o controladores cuando
+    la consulta apunta a un equipo principal.
     """
     tipos_query = _detectar_tipos_secundarios(qn)
     familias_query = _detectar_familias(qn)
 
-    # Si la consulta ya es explícitamente de accesorio/repuesto,
-    # no castigamos nada.
     if tipos_query:
         return 0.0
 
@@ -480,24 +471,53 @@ def _ajuste_por_tipo_secundario(qn: str, doc: dict) -> float:
     if not tipos_doc:
         return 0.0
 
-    # Penalización base por ser secundario
     penalizacion = -8.0
 
-    # Si la consulta es claramente de un equipo principal
-    # y el producto es accesorio/repuesto/controlador, la penalización sube.
     if any(f in familias_query for f in ["valvula", "bomba", "compresor", "sensor", "manometro"]):
         penalizacion -= 10.0
 
-    # Si el producto es "controlador" y la consulta pide compresor o válvula,
-    # queremos bajarlo más porque suele ser ruido.
     if "controlador" in tipos_doc:
         penalizacion -= 4.0
 
-    # Si es accesorio o repuesto, se penaliza un poco más.
     if "accesorio" in tipos_doc or "repuesto" in tipos_doc or "kit" in tipos_doc:
         penalizacion -= 4.0
 
     return penalizacion
+
+
+def _bonus_score_oportunidad(doc: dict) -> float:
+    """
+    Bonus histórico por score_oportunidad, si existe.
+    Se mantiene por compatibilidad.
+    """
+    score_op = _safe_float(doc.get("score_oportunidad"), 0.0)
+
+    if score_op <= 0:
+        return 0.0
+
+    return min(score_op / 100, 1.0) * 5.0
+
+
+def _bonus_score_nia(doc: dict) -> float:
+    """
+    Bonus comercial basado en score_nia.
+
+    Regla:
+    - score_nia viene del Excel de Don Andrés.
+    - No reemplaza relevancia técnica.
+    - Solo suma hasta MAX_BONUS_SCORE_NIA puntos.
+    - Si no existe o es 0, no afecta.
+    """
+    score_nia = _safe_float(doc.get("score_nia"), 0.0)
+
+    if score_nia <= 0:
+        return 0.0
+
+    # Asumimos escala 0-100.
+    # Si en algún caso supera 100, se limita para no romper ranking.
+    normalized = min(score_nia, 100.0) / 100.0
+
+    return normalized * MAX_BONUS_SCORE_NIA
 
 
 # ============================================================
@@ -506,12 +526,7 @@ def _ajuste_por_tipo_secundario(qn: str, doc: dict) -> float:
 
 def es_codigo_via(texto: str) -> bool:
     """
-    Detecta si el texto parece un código de producto de VIA Industrial.
-
-    Formatos válidos identificados en el catálogo real:
-    - P123456     → P mayúscula + números (más común)
-    - P123456A    → P + números + letras
-    - 123456      → solo números de 6+ dígitos
+    Detecta si el texto parece un código de producto VIA.
     """
     texto = texto.strip()
 
@@ -530,8 +545,7 @@ def es_codigo_via(texto: str) -> bool:
 
 def buscar_por_codigo_exacto(codigo: str) -> list[dict]:
     """
-    Búsqueda exacta por código de producto usando el índice CODIGO.
-    Más rápida y precisa que RapidFuzz para códigos conocidos.
+    Búsqueda exacta por código de producto usando índice CODIGO.
     """
     try:
         resultados = list(get_collection().find(
@@ -539,6 +553,7 @@ def buscar_por_codigo_exacto(codigo: str) -> list[dict]:
             PROYECCION_PRODUCTO
         ).limit(5))
         return resultados
+
     except Exception as e:
         logger.error(f"Error en buscar_por_codigo_exacto: {e}")
         return []
@@ -552,15 +567,15 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
     """
     Devuelve el detalle completo del scoring de un producto.
 
-    Esto permite ver:
+    score_total combina:
     - score textual base
-    - bonus por coincidencias útiles
-    - bonus por marca
-    - ajuste por marca
-    - ajuste por familia industrial
-    - penalización por accesorio/repuesto/controlador
-    - bonus comercial
-    - score final
+    - coincidencias útiles
+    - marca
+    - marca + familia
+    - familia industrial
+    - penalización por tipo secundario
+    - score_oportunidad
+    - score_nia comercial
     """
     qn = normalizar(q)
     tokens = extraer_tokens(qn)
@@ -570,7 +585,7 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
     referencia = normalizar(str(doc.get("REFERENCIA", "")))
     ref_alt = normalizar(str(doc.get("REF_ALTERNATIVA", "")))
 
-    # Similitudes base
+    # Similitudes base.
     s1 = fuzz.token_set_ratio(qn, texto_busqueda)
     s2 = fuzz.partial_ratio(qn, texto_busqueda)
     s3 = fuzz.token_sort_ratio(qn, nombre)
@@ -581,30 +596,16 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
 
     score_textual = (s1 * 0.35) + (s2 * 0.25) + (s3 * 0.20) + (s4 * 0.15)
 
-    # Bonus extra por coincidencias más útiles
     bonus_coincidencias = _bonus_por_coincidencias(qn, doc, tokens)
-
-    # Bonus/penalización por marca
     bonus_marca = _bonus_por_marca(qn, doc)
     ajuste_marca = _ajuste_por_marca(qn, doc)
-
-    # Bonus combinado marca + familia
     bonus_marca_familia = _bonus_marca_y_familia(qn, doc)
-
-    # Ajuste por familia industrial
     ajuste_familia = _ajuste_por_familia(qn, doc)
-
-    # Penalización por tipo secundario cuando la consulta es de producto base
     ajuste_secundario = _ajuste_por_tipo_secundario(qn, doc)
 
-    # Bonus por score de oportunidad comercial
-    bonus_oportunidad = 0.0
-    try:
-        score_op = float(doc.get("score_oportunidad") or 0)
-        if score_op > 0:
-            bonus_oportunidad = min(score_op / 100, 1.0) * 5
-    except (ValueError, TypeError):
-        pass
+    # Bonus comercial.
+    bonus_oportunidad = _bonus_score_oportunidad(doc)
+    bonus_score_nia = _bonus_score_nia(doc)
 
     score_total = max(
         score_textual
@@ -614,9 +615,12 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
         + ajuste_marca
         + ajuste_familia
         + ajuste_secundario
-        + bonus_oportunidad,
+        + bonus_oportunidad
+        + bonus_score_nia,
         0.0
     )
+
+    score_nia_raw = _safe_float(doc.get("score_nia"), 0.0)
 
     return {
         "score_total": round(score_total, 2),
@@ -628,6 +632,12 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
         "ajuste_familia": round(ajuste_familia, 2),
         "ajuste_secundario": round(ajuste_secundario, 2),
         "bonus_oportunidad": round(bonus_oportunidad, 2),
+
+        # Nuevo scoring comercial.
+        "score_nia_raw": round(score_nia_raw, 4),
+        "bonus_score_nia": round(bonus_score_nia, 2),
+
+        # Debug textual.
         "s1_token_set": round(s1, 2),
         "s2_partial_texto": round(s2, 2),
         "s3_token_sort_nombre": round(s3, 2),
@@ -638,7 +648,6 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
 def score_relevancia(q: str, doc: dict) -> float:
     """
     Mantiene compatibilidad con el código anterior.
-    Retorna solo el score total.
     """
     return evaluar_relevancia(q, doc)["score_total"]
 
@@ -649,12 +658,12 @@ def score_relevancia(q: str, doc: dict) -> float:
 
 def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
     """
-    Función principal de búsqueda. Recibe texto libre del usuario
-    y retorna lista de productos ordenados por relevancia.
+    Función principal de búsqueda.
 
-    Estrategia en dos fases:
-    1. MongoDB filtra candidatos con regex
-    2. RapidFuzz + boosts industriales reordenan y depuran
+    Estrategia:
+    1. MongoDB filtra candidatos con regex.
+    2. RapidFuzz + reglas industriales reordenan.
+    3. score_nia suma prioridad comercial controlada.
     """
     q_limpia = normalizar(mensaje)
     tokens = extraer_tokens(q_limpia)
@@ -663,7 +672,7 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
         return []
 
     # -------------------------------------------------------
-    # Detección de código exacto — búsqueda directa por índice
+    # Detección de código exacto
     # -------------------------------------------------------
     if es_codigo_via(mensaje.strip()):
         logger.info(f"Código VIA detectado: {mensaje.strip()} — búsqueda exacta")
@@ -695,13 +704,11 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
         "EQUIVALENTE_2",
     ]
 
-    # Query completa primero — más restrictiva y precisa
     for campo in campos:
         condiciones_busqueda.append({
             campo: {"$regex": re.escape(q_limpia), "$options": "i"}
         })
 
-    # Token por token — captura coincidencias parciales
     for token in tokens:
         for campo in campos:
             condiciones_busqueda.append({
@@ -722,6 +729,7 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
             },
             PROYECCION_PRODUCTO
         ))
+
     except Exception as e:
         logger.error(f"Error MongoDB en buscar_productos: {e}")
         raise
@@ -740,9 +748,10 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
         return []
 
     # -------------------------------------------------------
-    # FASE 2: Re-ranking con heurística industrial
+    # FASE 2: Re-ranking
     # -------------------------------------------------------
     scored = []
+
     for doc in candidatos:
         detalle = evaluar_relevancia(mensaje, doc)
         doc["_score_nia"] = detalle["score_total"]
@@ -754,7 +763,11 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
     # -------------------------------------------------------
     # FILTRO DE UMBRAL MÍNIMO
     # -------------------------------------------------------
-    scored = [(doc, detalle) for doc, detalle in scored if detalle["score_total"] >= UMBRAL_MINIMO]
+    scored = [
+        (doc, detalle)
+        for doc, detalle in scored
+        if detalle["score_total"] >= UMBRAL_MINIMO
+    ]
 
     if not scored:
         logger.info(f"Sin resultados por encima del umbral {UMBRAL_MINIMO} para: {mensaje}")
@@ -771,13 +784,14 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
         return []
 
     # -------------------------------------------------------
-    # Eliminar duplicados manteniendo el de mayor score
+    # Eliminar duplicados manteniendo mayor score
     # -------------------------------------------------------
     vistos = set()
     resultados = []
 
     for doc, detalle in scored:
         clave = (doc.get("CODIGO"), doc.get("DESCRIPCION_CORTA_PRE"))
+
         if clave not in vistos:
             vistos.add(clave)
             doc["_score_nia"] = detalle["score_total"]
@@ -788,8 +802,10 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
     # LOG DE TRAZABILIDAD DEL RANKING
     # -------------------------------------------------------
     top_debug = []
+
     for doc in resultados[:5]:
         debug = doc.get("_score_debug", {})
+
         top_debug.append({
             "codigo": doc.get("CODIGO", ""),
             "nombre": doc.get("DESCRIPCION_CORTA_PRE", ""),
@@ -803,6 +819,12 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
             "ajuste_familia": debug.get("ajuste_familia"),
             "ajuste_secundario": debug.get("ajuste_secundario"),
             "bonus_oportunidad": debug.get("bonus_oportunidad"),
+
+            # Nuevo debug comercial.
+            "score_nia_raw": debug.get("score_nia_raw"),
+            "bonus_score_nia": debug.get("bonus_score_nia"),
+            "score_source": doc.get("score_source"),
+            "score_version": doc.get("score_version"),
         })
 
     logger.info(
@@ -812,6 +834,7 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
             "total_candidatos": len(candidatos),
             "total_finales": len(resultados),
             "umbral": UMBRAL_MINIMO,
+            "max_bonus_score_nia": MAX_BONUS_SCORE_NIA,
             "top_resultados": top_debug,
         }, ensure_ascii=False, default=str)
     )
@@ -826,8 +849,7 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
 def formatear_producto(p: dict) -> dict:
     """
     Normaliza la estructura de salida de cada producto.
-    Es el contrato entre el backend y el frontend/NIA.
-    Cualquier cambio aquí afecta toda la API.
+    Es el contrato entre backend, frontend y NIA.
     """
 
     # -------------------------------------------------------
@@ -859,39 +881,55 @@ def formatear_producto(p: dict) -> dict:
     # -------------------------------------------------------
     # 2. Calcular disponibilidad de stock por sede
     # -------------------------------------------------------
-    stock_bog = float(p.get("STOCK_BOG") or 0)
-    stock_cali = float(p.get("STOCK_CALI") or 0)
-    stock_total = float(p.get("STOCK_TOTAL") or 0)
+    stock_bog = _safe_float(p.get("STOCK_BOG"), 0.0)
+    stock_cali = _safe_float(p.get("STOCK_CALI"), 0.0)
+    stock_total = _safe_float(p.get("STOCK_TOTAL"), 0.0)
 
     if stock_bog > 0 or stock_cali > 0:
         sedes = []
+
         if stock_bog > 0:
             sedes.append(f"Bogotá ({int(stock_bog)} und)")
+
         if stock_cali > 0:
             sedes.append(f"Cali ({int(stock_cali)} und)")
+
         disponibilidad = f"Disponible en {', '.join(sedes)}"
+
     elif stock_total > 0:
         disponibilidad = f"Disponible ({int(stock_total)} und)"
+
     else:
         disponibilidad = "Consultar disponibilidad"
 
     # -------------------------------------------------------
-    # 3. Características técnicas — array de pares título/valor
+    # 3. Características técnicas
     # -------------------------------------------------------
     caracteristicas = p.get("CARACTERISTICAS", [])
+
     if not isinstance(caracteristicas, list):
         caracteristicas = []
 
     # -------------------------------------------------------
-    # 4. Score de oportunidad — seguro contra None
+    # 4. Scores
     # -------------------------------------------------------
     score_op = None
-    try:
-        raw_score = p.get("score_oportunidad")
-        if raw_score is not None:
-            score_op = float(raw_score)
-    except (ValueError, TypeError):
-        pass
+    raw_score_op = p.get("score_oportunidad")
+
+    if raw_score_op is not None:
+        try:
+            score_op = float(raw_score_op)
+        except (ValueError, TypeError):
+            score_op = None
+
+    score_nia = None
+    raw_score_nia = p.get("score_nia")
+
+    if raw_score_nia is not None:
+        try:
+            score_nia = float(raw_score_nia)
+        except (ValueError, TypeError):
+            score_nia = None
 
     return {
         # Identificación
@@ -904,7 +942,7 @@ def formatear_producto(p: dict) -> dict:
         "descripcion": str(p.get("DESCRIPCION_LARGA_PRE", "")).strip()[:300],
         "marca":       str(p.get("MARCA_LET", "")).strip(),
 
-        # Jerarquía completa VIA Industrial
+        # Jerarquía VIA Industrial
         "nivel_0": str(p.get("NIVEL_0", "")).strip(),
         "nivel_1": str(p.get("NIVEL_1", "")).strip(),
         "nivel_2": str(p.get("NIVEL_2", "")).strip(),
@@ -928,7 +966,17 @@ def formatear_producto(p: dict) -> dict:
         "dimension": str(p.get("DIMENSION", "")).strip(),
         "peso":      float(p.get("PESO") or 0) if p.get("PESO") else None,
 
-        # Score comercial — activo cuando llegue Excel de Don Andrés
+        # Scores
         "score_oportunidad": score_op,
         "tipo_sku":          str(p.get("tipo_sku", "")).strip(),
+
+        # Nuevo score comercial de Don Andrés
+        "score_nia":         score_nia,
+        "score_source":      str(p.get("score_source", "")).strip(),
+        "score_version":     str(p.get("score_version", "")).strip(),
+
+        # Debug interno útil para pruebas.
+        # El frontend puede ignorarlo si no lo necesita.
+        "_score_nia":        p.get("_score_nia"),
+        "_score_debug":      p.get("_score_debug"),
     }
