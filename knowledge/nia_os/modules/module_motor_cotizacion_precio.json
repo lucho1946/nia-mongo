@@ -1,0 +1,14 @@
+{
+  "module_id": "module_motor_cotizacion_precio",
+  "nombre_visible": "Motor de Cotización, Precio y Disponibilidad",
+  "version": "2.0.0",
+  "descripcion": "Controla cuándo se puede hablar de precio, tiempo de entrega, disponibilidad, flete y cotización oficial.",
+  "prioridad": 5,
+  "reglas": [
+    "En cotización existente, usar la cotización oficial como fuente principal.",
+    "En solicitud nueva, solo mencionar precio si API lo devuelve explícitamente como válido, disponible o actualizado.",
+    "No inventar precios, tiempos, stock ni descuentos.",
+    "La pre-cotización de API no confirma flete ni disponibilidad salvo que el dato venga explícito.",
+    "Si no hay precio confirmado, dejar camino de avance hacia cotización formal."
+  ]
+}

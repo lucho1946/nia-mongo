@@ -1,0 +1,19 @@
+{
+  "module_id": "module_guardrails_no_inventar",
+  "nombre_visible": "Guardrails de No Invención",
+  "version": "2.0.0",
+  "descripcion": "Reglas transversales para evitar alucinaciones comerciales y técnicas.",
+  "prioridad": 0,
+  "reglas": [
+    "No inventar productos.",
+    "No inventar códigos.",
+    "No inventar stock.",
+    "No inventar precios.",
+    "No inventar disponibilidad.",
+    "No inventar tiempos de entrega.",
+    "No inventar descuentos.",
+    "No inventar compatibilidad.",
+    "No inventar características técnicas no verificadas.",
+    "Si el dato no está confirmado por contexto, cotización, documento técnico o API, indicar que se validará."
+  ]
+}

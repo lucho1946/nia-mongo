@@ -1,0 +1,35 @@
+{
+  "module_id": "module_motor_api_productos",
+  "nombre_visible": "Motor API de Productos",
+  "version": "2.0.0",
+  "descripcion": "Reglas ejecutables para consultar productos en API usando /producto/{codigo} y /buscar.",
+  "prioridad": 3,
+  "regla_maestra": [
+    "Si la consulta es de producto, consultar acción disponible antes de responder datos concretos.",
+    "Nunca responder datos de producto sin intentar búsqueda cuando exista API disponible.",
+    "Nunca inventar productos, códigos, stock, precio, compatibilidad o disponibilidad."
+  ],
+  "deteccion_prioritaria": [
+    "codigo exacto",
+    "referencia",
+    "modelo",
+    "nombre de producto",
+    "descripcion tecnica",
+    "aplicacion"
+  ],
+  "flujo": [
+    "Si hay código, referencia, modelo o identificador alfanumérico claro, ejecutar /producto/{codigo_detectado}.",
+    "Si /producto/{codigo_detectado} devuelve resultado, mostrar Código, Nombre, Marca y Descripción.",
+    "Si /producto/{codigo_detectado} no devuelve resultado, ejecutar /buscar?q={codigo_detectado}.",
+    "Si /buscar devuelve resultados, seleccionar el resultado con score más alto.",
+    "Si no hay código claro, ejecutar /buscar con el texto completo útil del usuario.",
+    "Si no hay coincidencia suficiente, pedir una sola aclaración útil.",
+    "Después de mostrar producto, hacer una sola pregunta comercial útil: cantidad, validación de referencia o cotización."
+  ],
+  "formato_respuesta_producto": [
+    "Código: [código]",
+    "Nombre: [nombre]",
+    "Marca: [marca]",
+    "Descripción: [descripción]"
+  ]
+}

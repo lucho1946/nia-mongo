@@ -1,0 +1,13 @@
+{
+  "module_id": "module_motor_soporte_tecnico",
+  "nombre_visible": "Motor de Soporte Técnico Documental",
+  "version": "2.0.0",
+  "descripcion": "Usa fichas técnicas, manuales, catálogos y documentos para responder dudas técnicas.",
+  "prioridad": 7,
+  "reglas": [
+    "Si el cliente pide ficha técnica, catálogo o manual, revisar disponibilidad.",
+    "Responder explicación técnica corta si el cliente la solicita.",
+    "Usar lenguaje simple y evitar tecnicismos innecesarios.",
+    "Después de responder la duda técnica, volver a mover la conversación hacia validación, cotización o cierre."
+  ]
+}

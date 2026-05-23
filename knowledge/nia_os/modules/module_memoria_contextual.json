@@ -1,0 +1,12 @@
+{
+  "module_id": "module_memoria_contextual",
+  "nombre_visible": "Memoria Contextual",
+  "version": "1.0.0",
+  "descripcion": "Guarda contexto relevante de cliente, negociación, datos ya entregados, productos consultados y estado.",
+  "prioridad": 8,
+  "reglas": [
+    "No pedir datos que ya existen en el contexto.",
+    "Recordar producto, cantidad, aplicación, cotización, intención y datos comerciales del hilo.",
+    "Usar memoria para evitar fricción y mantener continuidad."
+  ]
+}

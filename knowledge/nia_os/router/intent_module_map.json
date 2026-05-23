@@ -1,0 +1,69 @@
+{
+  "saludo": [
+    "module_motor_comercial",
+    "module_guardrails_no_inventar"
+  ],
+  "consulta_producto_codigo": [
+    "module_motor_comercial",
+    "module_motor_tecnico_producto",
+    "module_motor_api_productos",
+    "module_guardrails_no_inventar",
+    "module_observabilidad"
+  ],
+  "consulta_producto_descripcion": [
+    "module_motor_comercial",
+    "module_motor_tecnico_producto",
+    "module_motor_api_productos",
+    "module_guardrails_no_inventar",
+    "module_observabilidad"
+  ],
+  "archivo_recibido": [
+    "module_vision_archivos",
+    "module_motor_tecnico_producto",
+    "module_motor_api_productos",
+    "module_motor_comercial",
+    "module_guardrails_no_inventar",
+    "module_hibrido_humano_ia",
+    "module_observabilidad"
+  ],
+  "foto_producto": [
+    "module_vision_archivos",
+    "module_motor_tecnico_producto",
+    "module_motor_api_productos",
+    "module_motor_comercial",
+    "module_guardrails_no_inventar",
+    "module_hibrido_humano_ia",
+    "module_observabilidad"
+  ],
+  "pide_precio": [
+    "module_motor_comercial",
+    "module_motor_tecnico_producto",
+    "module_motor_api_productos",
+    "module_motor_cotizacion_precio",
+    "module_guardrails_no_inventar"
+  ],
+  "pide_ficha_tecnica": [
+    "module_motor_tecnico_producto",
+    "module_motor_soporte_tecnico",
+    "module_vision_archivos",
+    "module_guardrails_no_inventar"
+  ],
+  "quiere_comprar": [
+    "module_motor_comercial",
+    "module_motor_cierre_proforma",
+    "module_guardrails_no_inventar",
+    "module_memoria_contextual",
+    "module_estado_negociacion"
+  ],
+  "objecion_precio": [
+    "module_motor_comercial",
+    "module_motor_cotizacion_precio",
+    "module_guardrails_no_inventar"
+  ],
+  "default": [
+    "module_motor_comercial",
+    "module_guardrails_no_inventar",
+    "module_memoria_contextual",
+    "module_estado_negociacion"
+  ]
+}

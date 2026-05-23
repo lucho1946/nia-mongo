@@ -1,0 +1,22 @@
+{
+  "module_id": "module_observabilidad",
+  "nombre_visible": "Observabilidad",
+  "version": "1.0.0",
+  "descripcion": "Registra trazas, eventos, intención detectada, módulos activados, errores, archivos y acciones API.",
+  "prioridad": 10,
+  "eventos": [
+    "message_received",
+    "intent_detected",
+    "modules_selected",
+    "file_received",
+    "file_processed",
+    "ocr_extracted",
+    "api_product_lookup",
+    "api_search",
+    "state_changed",
+    "memory_updated",
+    "human_escalation",
+    "response_generated",
+    "error"
+  ]
+}

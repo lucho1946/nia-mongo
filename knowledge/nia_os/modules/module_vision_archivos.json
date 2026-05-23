@@ -1,0 +1,61 @@
+{
+  "module_id": "module_vision_archivos",
+  "nombre_visible": "Motor de Visión e Ingesta de Archivos",
+  "version": "1.0.0",
+  "descripcion": "Analiza fotos, imágenes, pantallazos, PDFs, Excel, Word, CSV y ZIP enviados por clientes para extraer datos técnicos y convertirlos en acción comercial.",
+  "prioridad": 4,
+  "aplica_cuando": [
+    "cliente_envia_foto",
+    "cliente_envia_imagen",
+    "cliente_envia_pdf",
+    "cliente_envia_excel",
+    "cliente_envia_word",
+    "cliente_envia_csv",
+    "cliente_envia_zip",
+    "cliente_envia_pantallazo"
+  ],
+  "reglas": [
+    "Si el cliente envía una imagen o archivo, NIA debe intentar revisarlo antes de pedir que repita la información por texto.",
+    "Debe detectar tipo de archivo y activar el extractor adecuado.",
+    "En imágenes debe intentar identificar códigos, referencias, marcas, modelos, placas técnicas, etiquetas, texto visible, forma del producto o aplicación.",
+    "En PDFs debe extraer texto si existe; si es escaneado, debe intentar OCR o escalar.",
+    "En Excel o CSV debe leer tablas y buscar columnas o celdas con códigos, referencias, marcas, descripciones, cantidades o precios.",
+    "En Word debe extraer texto y buscar datos técnicos o comerciales.",
+    "En ZIP debe descomprimir de forma segura y analizar los archivos internos permitidos.",
+    "Si encuentra datos útiles, debe activar el motor API de productos.",
+    "Si no hay certeza suficiente, debe pedir una aclaración breve o escalar a revisión humana.",
+    "No debe inventar compatibilidad, disponibilidad, precio, stock ni existencia de producto a partir de una imagen ambigua.",
+    "Debe convertir la información visual o documental en una acción comercial: búsqueda, validación, cotización o escalamiento."
+  ],
+  "datos_a_extraer": [
+    "codigo_viaindustrial",
+    "referencia",
+    "marca",
+    "modelo",
+    "serial",
+    "tipo_equipo",
+    "variable_medida",
+    "rango",
+    "capacidad",
+    "voltaje",
+    "potencia",
+    "conexion",
+    "fluido",
+    "material",
+    "cantidad",
+    "texto_visible"
+  ],
+  "respuesta_sugerida_al_recibir_archivo": [
+    "Recibido, ya estoy revisando la información.",
+    "Veo datos útiles del equipo. Voy a validar si tenemos una opción en ViaIndustrial o una coincidencia cercana.",
+    "La imagen no es suficientemente clara. ¿Puedes enviarme una foto más nítida de la placa, referencia o etiqueta?"
+  ],
+  "criterios_escalamiento_humano": [
+    "imagen borrosa o ilegible",
+    "producto crítico sin identificación suficiente",
+    "posible compatibilidad técnica delicada",
+    "archivo corrupto o no procesable",
+    "API sin resultados y necesidad comercial relevante",
+    "riesgo de cotizar producto equivocado"
+  ]
+}

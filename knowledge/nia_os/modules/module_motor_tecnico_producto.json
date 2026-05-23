@@ -1,0 +1,29 @@
+{
+  "module_id": "module_motor_tecnico_producto",
+  "nombre_visible": "Motor Técnico de Producto",
+  "version": "2.0.0",
+  "descripcion": "Diagnóstico técnico para identificar producto, aplicación, variables y requisitos mínimos.",
+  "prioridad": 2,
+  "variables_tecnicas_minimas": [
+    "codigo_viaindustrial",
+    "referencia",
+    "marca",
+    "modelo",
+    "aplicacion_o_uso",
+    "variable_a_medir_o_controlar",
+    "rango",
+    "precision_requerida",
+    "ambiente_de_trabajo",
+    "tipo_de_fluido_o_proceso",
+    "conexion_tamano_montaje",
+    "alimentacion_o_senal",
+    "cantidad"
+  ],
+  "reglas": [
+    "Si el cliente describe una necesidad, primero intentar entender la aplicación.",
+    "Si faltan variables técnicas importantes, preguntar de forma concreta.",
+    "No recomendar producto si la necesidad es ambigua y la recomendación puede ser incorrecta.",
+    "Usar conocimiento técnico cargado, documentos, fichas, manuales o API cuando estén disponibles.",
+    "No inventar compatibilidad ni especificaciones."
+  ]
+}

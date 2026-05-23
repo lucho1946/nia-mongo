@@ -1,0 +1,98 @@
+[
+  {
+    "file": "module_motor_comercial.json",
+    "module_id": "module_motor_comercial",
+    "nombre_visible": "Motor Comercial",
+    "version": "2.0.0",
+    "prioridad": 1,
+    "descripcion": "Conduce la conversación hacia especificación, cotización, proforma, pago o cierre."
+  },
+  {
+    "file": "module_motor_tecnico_producto.json",
+    "module_id": "module_motor_tecnico_producto",
+    "nombre_visible": "Motor Técnico de Producto",
+    "version": "2.0.0",
+    "prioridad": 2,
+    "descripcion": "Diagnóstico técnico para identificar producto, aplicación, variables y requisitos mínimos."
+  },
+  {
+    "file": "module_motor_api_productos.json",
+    "module_id": "module_motor_api_productos",
+    "nombre_visible": "Motor API de Productos",
+    "version": "2.0.0",
+    "prioridad": 3,
+    "descripcion": "Reglas ejecutables para consultar productos en API usando /producto/{codigo} y /buscar."
+  },
+  {
+    "file": "module_vision_archivos.json",
+    "module_id": "module_vision_archivos",
+    "nombre_visible": "Motor de Visión e Ingesta de Archivos",
+    "version": "1.0.0",
+    "prioridad": 4,
+    "descripcion": "Analiza fotos, imágenes, pantallazos, PDFs, Excel, Word, CSV y ZIP enviados por clientes para extraer datos técnicos y convertirlos en acción comercial."
+  },
+  {
+    "file": "module_motor_cotizacion_precio.json",
+    "module_id": "module_motor_cotizacion_precio",
+    "nombre_visible": "Motor de Cotización, Precio y Disponibilidad",
+    "version": "2.0.0",
+    "prioridad": 5,
+    "descripcion": "Controla cuándo se puede hablar de precio, tiempo de entrega, disponibilidad, flete y cotización oficial."
+  },
+  {
+    "file": "module_motor_cierre_proforma.json",
+    "module_id": "module_motor_cierre_proforma",
+    "nombre_visible": "Motor de Cierre y Proforma",
+    "version": "2.0.0",
+    "prioridad": 6,
+    "descripcion": "Activa cierre cuando el cliente muestra intención firme de compra."
+  },
+  {
+    "file": "module_motor_soporte_tecnico.json",
+    "module_id": "module_motor_soporte_tecnico",
+    "nombre_visible": "Motor de Soporte Técnico Documental",
+    "version": "2.0.0",
+    "prioridad": 7,
+    "descripcion": "Usa fichas técnicas, manuales, catálogos y documentos para responder dudas técnicas."
+  },
+  {
+    "file": "module_guardrails_no_inventar.json",
+    "module_id": "module_guardrails_no_inventar",
+    "nombre_visible": "Guardrails de No Invención",
+    "version": "2.0.0",
+    "prioridad": 0,
+    "descripcion": "Reglas transversales para evitar alucinaciones comerciales y técnicas."
+  },
+  {
+    "file": "module_memoria_contextual.json",
+    "module_id": "module_memoria_contextual",
+    "nombre_visible": "Memoria Contextual",
+    "version": "1.0.0",
+    "prioridad": 8,
+    "descripcion": "Guarda contexto relevante de cliente, negociación, datos ya entregados, productos consultados y estado."
+  },
+  {
+    "file": "module_estado_negociacion.json",
+    "module_id": "module_estado_negociacion",
+    "nombre_visible": "Estados de Negociación",
+    "version": "1.0.0",
+    "prioridad": 9,
+    "descripcion": "Modelo de estados del proceso comercial."
+  },
+  {
+    "file": "module_observabilidad.json",
+    "module_id": "module_observabilidad",
+    "nombre_visible": "Observabilidad",
+    "version": "1.0.0",
+    "prioridad": 10,
+    "descripcion": "Registra trazas, eventos, intención detectada, módulos activados, errores, archivos y acciones API."
+  },
+  {
+    "file": "module_hibrido_humano_ia.json",
+    "module_id": "module_hibrido_humano_ia",
+    "nombre_visible": "Híbrido Humano + IA",
+    "version": "1.0.0",
+    "prioridad": 11,
+    "descripcion": "Define cuándo NIA debe escalar a un asesor humano."
+  }
+]

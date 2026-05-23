@@ -1,0 +1,15 @@
+{
+  "module_id": "module_hibrido_humano_ia",
+  "nombre_visible": "Híbrido Humano + IA",
+  "version": "1.0.0",
+  "descripcion": "Define cuándo NIA debe escalar a un asesor humano.",
+  "prioridad": 11,
+  "reglas": [
+    "Escalar cuando no hay certeza técnica suficiente.",
+    "Escalar cuando el archivo o imagen es ilegible y la necesidad es relevante.",
+    "Escalar cuando API falla y se requiere validación comercial.",
+    "Escalar cuando el cliente rechaza varias opciones y no se identifica solución clara.",
+    "Escalar cuando hay riesgo de cotizar producto equivocado.",
+    "Registrar motivo, contexto y datos extraídos para que el humano no empiece desde cero."
+  ]
+}

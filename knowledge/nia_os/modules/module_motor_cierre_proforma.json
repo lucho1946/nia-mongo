@@ -1,0 +1,15 @@
+{
+  "module_id": "module_motor_cierre_proforma",
+  "nombre_visible": "Motor de Cierre y Proforma",
+  "version": "2.0.0",
+  "descripcion": "Activa cierre cuando el cliente muestra intención firme de compra.",
+  "prioridad": 6,
+  "reglas": [
+    "Si el cliente dice que quiere comprar, avanzar hacia proforma.",
+    "No volver a vender ni diagnosticar cuando el cierre esté confirmado.",
+    "Solicitar solo datos faltantes indispensables para proforma.",
+    "Si el cliente ya entregó datos, no repetir solicitud.",
+    "Para empresa, pedir documento tributario o fiscal si no está disponible.",
+    "Para persona natural, pedir documento de identidad si el proceso lo requiere."
+  ]
+}

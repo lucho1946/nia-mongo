@@ -1,0 +1,25 @@
+{
+  "module_id": "module_estado_negociacion",
+  "nombre_visible": "Estados de Negociación",
+  "version": "1.0.0",
+  "descripcion": "Modelo de estados del proceso comercial.",
+  "prioridad": 9,
+  "estados": [
+    "saludo",
+    "descubrimiento",
+    "diagnostico_tecnico",
+    "busqueda_producto",
+    "producto_identificado",
+    "cotizacion_pendiente",
+    "cotizacion_enviada",
+    "validando_cumplimiento",
+    "objecion",
+    "intencion_compra",
+    "proforma_pendiente",
+    "proforma_enviada",
+    "pago_pendiente",
+    "pagado",
+    "logistica",
+    "escalado_humano"
+  ]
+}

@@ -14,38 +14,6 @@
 # - Se mantiene la interfaz pública de búsqueda y formato
 # - Mejor priorización por familias industriales
 #
-# VERSIÓN: 0.5
-# CAMBIOS v0.5:
-# - Score industrial más inteligente con boosts/penalizaciones
-# - Prioriza familias de producto correctas (válvula, bomba, sensor, etc.)
-# - Penaliza falsos positivos por similitud textual solamente
-# - Mantiene código exacto, VISIBLE_EN_LINEA y umbral mínimo
-# - Conserva la interfaz pública: buscar_productos() y formatear_producto()
-#
-# VERSIÓN: 0.4
-# CAMBIOS v0.4:
-# - Umbral mínimo de relevancia (UMBRAL_MINIMO = 60.0)
-# - Filtra resultados irrelevantes después de RapidFuzz
-# - Evita que búsquedas multimodales devuelvan productos no relacionados
-#
-# VERSIÓN: 0.3
-# CAMBIOS v0.3:
-# - Detección de código VIA exacto (P123456, 123456)
-# - buscar_por_codigo_exacto() con búsqueda directa por índice
-# - Fallback a búsqueda normal si código no existe
-# - EXISTENCIA agregado a proyecciones
-#
-# VERSIÓN: 0.2
-# CAMBIOS v0.2:
-# - Regla de negocio PV_FECHA: precio vigente solo si < 12 meses
-# - Jerarquía completa NIVEL_0 al NIVEL_4 en respuesta
-# - Stock por sede Bogotá y Cali con disponibilidad real
-# - Equivalentes para ofrecer alternativas
-# - Características técnicas incluidas en respuesta
-# - Score de oportunidad comercial (preparado para Excel Don Andrés)
-# - Búsqueda por texto_busqueda como campo principal
-# - Filtro VISIBLE_EN_LINEA robusto para múltiples tipos de dato
-#
 # CAMPOS REALES EN MONGODB (vienen del ETL de SQL Server):
 #   CODIGO, REFERENCIA, REF_ALTERNATIVA
 #   DESCRIPCION_CORTA_PRE, DESCRIPCION_LARGA_PRE
@@ -214,6 +182,37 @@ SECONDARY_KEYWORDS = {
     ],
 }
 
+# ============================================================
+# MARCAS INDUSTRIALES PRIORITARIAS
+# ============================================================
+
+KNOWN_BRANDS = {
+    "siemens",
+    "festo",
+    "smc",
+    "ifm",
+    "omron",
+    "hyundai",
+    "schneider",
+    "abb",
+    "danfoss",
+    "endurance",
+    "autonics",
+    "metalwork",
+    "camozzi",
+    "parker",
+    "norgren",
+    "phoenix",
+    "weg",
+    "yaskawa",
+    "ema",
+    "ema-electronic",
+    "pixsys",
+    "dayton",
+    "horiba",
+    "yongningan",
+    "via",
+}
 
 # ============================================================
 # UTILIDADES DE TEXTO
@@ -242,6 +241,25 @@ def extraer_tokens(texto: str) -> list[str]:
     """
     tokens = re.findall(r"[a-zA-Z0-9\-\.\/]+", normalizar(texto))
     return list(dict.fromkeys(t for t in tokens if len(t) >= 2))
+
+def _detectar_marcas_conocidas(texto: str) -> set[str]:
+    """
+    Detecta marcas conocidas dentro de un texto normalizado.
+    Se usa búsqueda por substring para soportar variantes como:
+    - ema-electronic
+    - siemens
+    - pixsys
+    - dayton
+    """
+    texto_n = f" {normalizar(texto)} "
+    marcas = set()
+
+    for marca in KNOWN_BRANDS:
+        marca_n = normalizar(marca)
+        if marca_n and marca_n in texto_n:
+            marcas.add(marca)
+
+    return marcas
 
 
 def _texto_principal_doc(doc: dict) -> str:
@@ -344,13 +362,82 @@ def _bonus_por_coincidencias(qn: str, doc: dict, tokens: list[str]) -> float:
 
     return bonus
 
+def _bonus_por_marca(qn: str, doc: dict) -> float:
+    """
+    Prioriza productos cuya marca coincide explícitamente
+    con la intención del usuario.
+    """
+    marcas_query = _detectar_marcas_conocidas(qn)
+    marcas_doc = _detectar_marcas_conocidas(str(doc.get("MARCA_LET", "")))
+
+    if not marcas_query or not marcas_doc:
+        return 0.0
+
+    if marcas_query & marcas_doc:
+        return 18.0
+
+    return 0.0
+
+
+def _ajuste_por_marca(qn: str, doc: dict) -> float:
+    """
+    Penaliza productos cuya marca no coincide cuando el usuario
+    sí especificó una marca conocida.
+    """
+    marcas_query = _detectar_marcas_conocidas(qn)
+    marcas_doc = _detectar_marcas_conocidas(str(doc.get("MARCA_LET", "")))
+
+    if not marcas_query:
+        return 0.0
+
+    if not marcas_doc:
+        return 0.0
+
+    if marcas_query & marcas_doc:
+        return 0.0
+
+    return -25.0
+
+
+def _bonus_marca_y_familia(qn: str, doc: dict) -> float:
+    """
+    Prioridad industrial contextual.
+
+    Reglas:
+    - Marca + familia coinciden → bonus fuerte
+    - Marca coincide pero familia NO → penalización ligera
+    - Familia coincide pero marca NO → neutral
+    """
+    marcas_query = _detectar_marcas_conocidas(qn)
+    marcas_doc = _detectar_marcas_conocidas(str(doc.get("MARCA_LET", "")))
+
+    familias_query = _detectar_familias(qn)
+    familias_doc = _detectar_familias(_texto_principal_doc(doc))
+
+    if not marcas_query:
+        return 0.0
+
+    if marcas_doc and (marcas_query & marcas_doc):
+        if familias_query and familias_doc and (familias_query & familias_doc):
+            return 24.0
+        if familias_query and familias_doc:
+            return -18.0
+        return 8.0
+
+    return -25.0
+
 
 def _ajuste_por_familia(qn: str, doc: dict) -> float:
     """
-    Ajusta el score según la familia industrial detectada.
+    Ajuste fuerte por coherencia de familia industrial.
 
-    - Si la consulta y el producto comparten familia -> bonus fuerte
-    - Si la consulta tiene familia clara pero el producto cae en otra -> penalización
+    Objetivo:
+    - Si el usuario pide MOTOR → priorizar motores reales
+    - Si pide SENSOR → priorizar sensores reales
+    - Si pide VALVULA → priorizar válvulas reales
+
+    Esto evita que una marca correcta pero de otra categoría
+    suba artificialmente en el ranking.
     """
     familias_query = _detectar_familias(qn)
     familias_doc = _detectar_familias(_texto_principal_doc(doc))
@@ -359,12 +446,12 @@ def _ajuste_por_familia(qn: str, doc: dict) -> float:
         return 0.0
 
     if familias_query & familias_doc:
-        return 18.0
+        return 26.0
 
     if familias_doc:
-        return -22.0
+        return -40.0
 
-    return 0.0
+    return -12.0
 
 
 def _ajuste_por_tipo_secundario(qn: str, doc: dict) -> float:
@@ -468,6 +555,8 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
     Esto permite ver:
     - score textual base
     - bonus por coincidencias útiles
+    - bonus por marca
+    - ajuste por marca
     - ajuste por familia industrial
     - penalización por accesorio/repuesto/controlador
     - bonus comercial
@@ -495,6 +584,13 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
     # Bonus extra por coincidencias más útiles
     bonus_coincidencias = _bonus_por_coincidencias(qn, doc, tokens)
 
+    # Bonus/penalización por marca
+    bonus_marca = _bonus_por_marca(qn, doc)
+    ajuste_marca = _ajuste_por_marca(qn, doc)
+
+    # Bonus combinado marca + familia
+    bonus_marca_familia = _bonus_marca_y_familia(qn, doc)
+
     # Ajuste por familia industrial
     ajuste_familia = _ajuste_por_familia(qn, doc)
 
@@ -513,6 +609,9 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
     score_total = max(
         score_textual
         + bonus_coincidencias
+        + bonus_marca
+        + bonus_marca_familia
+        + ajuste_marca
         + ajuste_familia
         + ajuste_secundario
         + bonus_oportunidad,
@@ -523,6 +622,9 @@ def evaluar_relevancia(q: str, doc: dict) -> dict:
         "score_total": round(score_total, 2),
         "score_textual": round(score_textual, 2),
         "bonus_coincidencias": round(bonus_coincidencias, 2),
+        "bonus_marca": round(bonus_marca, 2),
+        "bonus_marca_familia": round(bonus_marca_familia, 2),
+        "ajuste_marca": round(ajuste_marca, 2),
         "ajuste_familia": round(ajuste_familia, 2),
         "ajuste_secundario": round(ajuste_secundario, 2),
         "bonus_oportunidad": round(bonus_oportunidad, 2),
@@ -691,9 +793,13 @@ def buscar_productos(mensaje: str, limit: int = 8) -> list[dict]:
         top_debug.append({
             "codigo": doc.get("CODIGO", ""),
             "nombre": doc.get("DESCRIPCION_CORTA_PRE", ""),
+            "marca": doc.get("MARCA_LET", ""),
             "score_total": debug.get("score_total"),
             "score_textual": debug.get("score_textual"),
             "bonus_coincidencias": debug.get("bonus_coincidencias"),
+            "bonus_marca": debug.get("bonus_marca"),
+            "bonus_marca_familia": debug.get("bonus_marca_familia"),
+            "ajuste_marca": debug.get("ajuste_marca"),
             "ajuste_familia": debug.get("ajuste_familia"),
             "ajuste_secundario": debug.get("ajuste_secundario"),
             "bonus_oportunidad": debug.get("bonus_oportunidad"),
