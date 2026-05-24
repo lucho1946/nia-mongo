@@ -13,6 +13,10 @@
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from models.schemas import ChatRequest, ChatResponse
 from orchestration.chat_response_adapter import process_chat_request
 
