@@ -7,6 +7,7 @@
 # - intención
 # - memoria conversacional
 # - carga de contexto operativo NIA OS desde JSON
+# - política documental
 # - búsqueda preliminar en catálogo
 # - validación de compatibilidad producto/intención
 # - conocimiento del catálogo
@@ -14,18 +15,23 @@
 # - retrieval
 # - response engine
 #
-# Enfoque alineado con Don Andrés:
+# Enfoque alineado:
 # - NIA no pregunta por preguntar.
 # - NIA intenta buscar con el contexto útil disponible.
 # - NIA solo recomienda si los resultados coinciden con la necesidad.
 # - Si los resultados contradicen la intención, pregunta o pide precisión.
 # - Máximo 3 preguntas técnicas antes de recomendar/buscar.
 # - Catálogo real como fuente de verdad.
-# - Los JSON de NIA OS empiezan a entrar como contexto operativo.
+# - Los JSON de NIA OS entran como contexto operativo.
+# - La política documental decide cuándo una consulta podría usar documentos,
+#   pero todavía NO activa retrieval documental automáticamente.
 #
 # IMPORTANTE:
-# En esta versión los JSON de NIA OS se conectan como metadata segura.
-# Todavía NO reemplazan las reglas internas del orquestador.
+# En esta versión:
+# - NIA OS se conecta como metadata segura.
+# - document_policy se conecta como metadata segura.
+# - Todavía NO se inyecta contexto documental al prompt final.
+# - Todavía NO se reemplaza catálogo por documentos.
 # ============================================================
 
 from __future__ import annotations
@@ -65,6 +71,10 @@ from knowledge.dynamic_question_engine import (
 
 from knowledge.nia_os_loader import (
     build_nia_os_context,
+)
+
+from knowledge.document_policy import (
+    evaluate_document_policy,
 )
 
 
@@ -260,21 +270,62 @@ def _build_payload_from_results(intent: str, results: List[dict]) -> Dict[str, A
     }
 
 
+def _safe_evaluate_document_policy(
+    message: str,
+    detected_intent: str,
+    context: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Evalúa document_policy sin permitir que un error rompa el orquestador.
+
+    Esta función deja la política documental lista como metadata observable.
+    Todavía NO ejecuta retrieval documental.
+    """
+    try:
+        return evaluate_document_policy(
+            message=message,
+            intent=detected_intent,
+            context=context,
+        )
+    except Exception as error:
+        return {
+            "use_document_context": False,
+            "prioritize_catalog": True,
+            "source_type": None,
+            "confidence": 0.0,
+            "reason": f"document_policy_error: {error}",
+            "signals": {},
+        }
+
+
 def _attach_nia_os_metadata(
     response: Dict[str, Any],
     nia_os_context: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    Adjunta metadata interna de NIA OS a la respuesta.
+    Adjunta metadata interna de NIA OS y document_policy a la respuesta.
 
-    Esto permite validar qué módulos del cerebro de Don Andrés
-    se activan según la intención detectada, sin cambiar todavía
-    la lógica principal del orquestador.
+    Nota:
+    - En producción esta metadata puede ocultarse desde el router si se desea.
+    - No debe usarse para exponer configuración sensible al cliente.
     """
     response["nia_os"] = {
         "intent": nia_os_context.get("nia_os_intent"),
         "module_ids": nia_os_context.get("module_ids", []),
     }
+
+    document_policy = nia_os_context.get("document_policy")
+
+    if isinstance(document_policy, dict):
+        response["document_policy"] = {
+            "use_document_context": document_policy.get("use_document_context", False),
+            "prioritize_catalog": document_policy.get("prioritize_catalog", True),
+            "source_type": document_policy.get("source_type"),
+            "confidence": document_policy.get("confidence", 0.0),
+            "reason": document_policy.get("reason", ""),
+            "is_internal_nia_query": document_policy.get("is_internal_nia_query", False),
+            "allow_public_disclosure": document_policy.get("allow_public_disclosure", True),
+        }
 
     return response
 
@@ -1390,6 +1441,52 @@ def process_message(
     )
 
     context = session.get("context", {})
+
+    # --------------------------------------------------------
+    # 3.1. Evaluar política documental
+    # --------------------------------------------------------
+    # Esta evaluación todavía NO activa retrieval documental.
+    # Solo deja metadata segura para trazabilidad y futura integración.
+    document_policy = _safe_evaluate_document_policy(
+        message=message,
+        detected_intent=detected_intent,
+        context=context,
+    )
+
+    nia_os_context["document_policy"] = document_policy
+    
+    # --------------------------------------------------------
+    # 3.2. Guardrail público para consultas internas de NIA
+    # --------------------------------------------------------
+    # Si un cliente pregunta por reglas, módulos, prompts, arquitectura
+    # o configuración interna, NIA NO debe buscar productos ni exponer
+    # detalles sensibles. Responde de forma pública y segura.
+    #----------------------------------------------------------
+    
+    if (
+        document_policy.get("is_internal_nia_query") is True
+        and document_policy.get("public_safe_response")
+    ):
+        safe_public_response = {
+            "intent": detected_intent,
+            "response": document_policy.get("public_safe_response"),
+            "needs_clarification": False,
+            "context": context,
+            "session_id": session_id,
+            "decision_reason": "public_safe_internal_nia_query",
+            "compatible_count": 0,
+        }
+
+        append_assistant_message(
+            session,
+            safe_public_response.get("response", ""),
+        )
+        save_session(session)
+
+        return _attach_nia_os_metadata(
+            safe_public_response,
+            nia_os_context,
+        )
 
     # --------------------------------------------------------
     # 4. Saludo puro

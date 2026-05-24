@@ -10,15 +10,17 @@
 # Este módulo NO llama OpenAI.
 # Este módulo NO responde al usuario.
 #
-# Solo decide:
+# Decide:
 # - ¿La consulta necesita soporte documental?
 # - ¿Qué tipo de fuente documental conviene usar?
 # - ¿La consulta debe ir primero al catálogo real?
+# - ¿La consulta intenta acceder a información interna de NIA?
 #
-# Reglas:
+# Regla:
 # - products_catalog = fuente de verdad para productos.
 # - technical_documents = soporte documental/técnico.
 # - NIA no debe usar documentos para inventar productos.
+# - NIA no debe exponer configuración interna sensible al cliente.
 # ============================================================
 
 from __future__ import annotations
@@ -33,12 +35,11 @@ from typing import Any, Dict, Optional
 # ============================================================
 
 DEFAULT_DOCUMENT_SOURCE_TYPE = "nia_os"
-
 MAX_REASON_LENGTH = 500
 
 
 # ============================================================
-# PALABRAS CLAVE
+# PALABRAS CLAVE DOCUMENTALES
 # ============================================================
 
 DOCUMENT_EXPLICIT_KEYWORDS = [
@@ -65,26 +66,6 @@ DOCUMENT_EXPLICIT_KEYWORDS = [
     "certificado",
 ]
 
-NIA_OS_KEYWORDS = [
-    "nia os",
-    "module_",
-    "modulo",
-    "módulo",
-    "guardrails",
-    "no inventar",
-    "memoria contextual",
-    "vision archivos",
-    "visión archivos",
-    "motor comercial",
-    "motor tecnico",
-    "motor técnico",
-    "observabilidad",
-    "orquestador",
-    "cerebro",
-    "reglas de nia",
-    "reglas",
-]
-
 DOCUMENT_ACTION_KEYWORDS = [
     "explica",
     "explícame",
@@ -106,6 +87,66 @@ DOCUMENT_ACTION_KEYWORDS = [
     "segun el manual",
     "según el manual",
 ]
+
+
+# ============================================================
+# PALABRAS CLAVE INTERNAS NIA OS
+# ============================================================
+
+NIA_OS_KEYWORDS = [
+    "nia os",
+    "module_",
+    "modulo",
+    "módulo",
+    "guardrails",
+    "guardrail",
+    "no inventar",
+    "memoria contextual",
+    "vision archivos",
+    "visión archivos",
+    "motor comercial",
+    "motor tecnico",
+    "motor técnico",
+    "observabilidad",
+    "orquestador",
+    "cerebro",
+    "reglas de nia",
+    "reglas internas",
+    "politica interna",
+    "política interna",
+    "configuracion interna",
+    "configuración interna",
+]
+
+INTERNAL_DISCLOSURE_KEYWORDS = [
+    "reglas",
+    "reglas internas",
+    "guardrails",
+    "guardrail",
+    "cerebro",
+    "orquestador",
+    "modulo",
+    "módulo",
+    "module_",
+    "prompt",
+    "prompt maestro",
+    "configuracion",
+    "configuración",
+    "arquitectura",
+    "como funcionas",
+    "cómo funcionas",
+    "como estas hecho",
+    "cómo estás hecho",
+    "instrucciones internas",
+    "sistema interno",
+    "nia os",
+    "no inventar",
+]
+
+
+# ============================================================
+# PALABRAS CLAVE PRODUCTO / CATÁLOGO
+# ============================================================
 
 PRODUCT_KEYWORDS = [
     "producto",
@@ -227,6 +268,44 @@ def _safe_reason(reason: str) -> str:
 
 
 # ============================================================
+# DETECCIÓN DE CONSULTAS INTERNAS
+# ============================================================
+
+def is_internal_nia_query(message: str) -> bool:
+    """
+    Detecta si el usuario está preguntando por reglas, módulos,
+    guardrails, prompt, arquitectura o funcionamiento interno de NIA.
+
+    Esto NO significa que NIA deba exponer todo.
+    Solo significa que el orquestador debe responder de forma pública
+    y segura, sin buscar productos ni revelar configuración sensible.
+    """
+    message_n = normalize_text(message)
+
+    return contains_any(message_n, INTERNAL_DISCLOSURE_KEYWORDS)
+
+
+def get_public_internal_response() -> str:
+    """
+    Respuesta segura para clientes cuando preguntan por reglas internas.
+
+    No expone:
+    - nombres de módulos internos
+    - JSON internos
+    - prompts
+    - arquitectura completa
+    - configuración sensible
+    """
+    return (
+        "Trabajo con reglas internas para evitar inventar productos, códigos, "
+        "precios, disponibilidad, stock o compatibilidades. Siempre debo basarme "
+        "en el catálogo real, información confirmada o pedir más datos cuando no "
+        "haya suficiente certeza. No puedo mostrar configuración interna, pero sí "
+        "puedo ayudarte a validar un producto, una referencia o una especificación."
+    )
+
+
+# ============================================================
 # DETECCIÓN PRINCIPAL
 # ============================================================
 
@@ -249,7 +328,6 @@ def detect_document_need(
     """
     context = context or {}
     message_n = normalize_text(message)
-    intent_n = normalize_text(intent)
 
     has_product_code = detect_product_code(message)
     has_document_keyword = contains_any(message_n, DOCUMENT_EXPLICIT_KEYWORDS)
@@ -257,6 +335,7 @@ def detect_document_need(
     has_document_action = contains_any(message_n, DOCUMENT_ACTION_KEYWORDS)
     has_product_keyword = contains_any(message_n, PRODUCT_KEYWORDS)
     has_technical_product_keyword = contains_any(message_n, TECHNICAL_PRODUCT_KEYWORDS)
+    has_internal_nia_query = is_internal_nia_query(message)
 
     has_uploaded_file = bool(
         context.get("archivo_ruta")
@@ -273,6 +352,7 @@ def detect_document_need(
         "has_product_keyword": has_product_keyword,
         "has_technical_product_keyword": has_technical_product_keyword,
         "has_uploaded_file": has_uploaded_file,
+        "has_internal_nia_query": has_internal_nia_query,
         "intent": intent,
     }
 
@@ -289,9 +369,9 @@ def detect_document_need(
         }
 
     # --------------------------------------------------------
-    # Regla 2: Consultas sobre NIA OS o módulos internos
+    # Regla 2: Consultas internas NIA OS
     # --------------------------------------------------------
-    if has_nia_os_keyword:
+    if has_internal_nia_query or has_nia_os_keyword:
         return {
             "needs_document_context": True,
             "source_type": DEFAULT_DOCUMENT_SOURCE_TYPE,
@@ -409,9 +489,16 @@ def should_prioritize_catalog(
     Regla:
     - Producto, precio, cotización, código o variables técnicas
       deben ir primero al catálogo.
+    - Preguntas internas sobre NIA OS NO deben disparar catálogo,
+      aunque contengan la palabra "productos".
     """
     context = context or {}
     message_n = normalize_text(message)
+
+    # Si la consulta es interna, NO priorizamos catálogo.
+    # Ejemplo: "qué reglas tiene NIA para no inventar productos"
+    if is_internal_nia_query(message):
+        return False
 
     if detect_product_code(message):
         return True
@@ -447,9 +534,14 @@ def evaluate_document_policy(
         "source_type": str | None,
         "confidence": float,
         "reason": str,
-        "signals": {...}
+        "signals": {...},
+        "is_internal_nia_query": bool,
+        "allow_public_disclosure": bool,
+        "public_safe_response": str | None
     }
     """
+    context = context or {}
+
     document_result = detect_document_need(
         message=message,
         intent=intent,
@@ -463,22 +555,17 @@ def evaluate_document_policy(
     )
 
     use_document_context = bool(document_result.get("needs_document_context"))
+    internal_query = is_internal_nia_query(message)
 
     # Seguridad:
-    # Si la consulta claramente es de producto, el catálogo tiene prioridad.
-    # Solo permitir documentos si hay archivo explícito o NIA OS/documento explícito.
-    if prioritize_catalog and use_document_context:
-        source_type = document_result.get("source_type")
+    # Las consultas internas pueden activar policy, pero no deben exponer
+    # detalles internos completos al cliente.
+    allow_public_disclosure = not internal_query
 
-        allowed_document_sources = {
-            "uploaded_file",
-            "nia_os",
-            DEFAULT_DOCUMENT_SOURCE_TYPE,
-            "technical_document",
-        }
+    public_safe_response = None
 
-        if source_type not in allowed_document_sources:
-            use_document_context = False
+    if internal_query:
+        public_safe_response = get_public_internal_response()
 
     return {
         "use_document_context": use_document_context,
@@ -487,4 +574,7 @@ def evaluate_document_policy(
         "confidence": document_result.get("confidence", 0.0),
         "reason": _safe_reason(document_result.get("reason", "")),
         "signals": document_result.get("signals", {}),
+        "is_internal_nia_query": internal_query,
+        "allow_public_disclosure": allow_public_disclosure,
+        "public_safe_response": public_safe_response,
     }

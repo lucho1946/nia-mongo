@@ -7,6 +7,7 @@
 # - usar contexto documental
 # - priorizar catálogo real
 # - evitar documentos para búsquedas de producto
+# - bloquear exposición interna sensible
 #
 # NO toca:
 # - MongoDB
@@ -32,54 +33,63 @@ TEST_CASES = [
         "message": "necesito un sensor de presion",
         "expected_document": False,
         "expected_catalog": True,
+        "expected_internal": False,
     },
     {
         "name": "Código exacto",
         "message": "busco el producto P382280",
         "expected_document": False,
         "expected_catalog": True,
+        "expected_internal": False,
     },
     {
         "name": "Precio producto",
         "message": "precio de la válvula de bola",
         "expected_document": False,
         "expected_catalog": True,
+        "expected_internal": False,
     },
     {
         "name": "Consulta PLC técnica",
         "message": "necesito un plc con modbus y 16 entradas",
         "expected_document": False,
         "expected_catalog": True,
+        "expected_internal": False,
     },
     {
-        "name": "Reglas no inventar",
+        "name": "Reglas no inventar - público seguro",
         "message": "qué reglas tiene NIA para no inventar productos",
         "expected_document": True,
-        "expected_catalog": True,
+        "expected_catalog": False,
+        "expected_internal": True,
     },
     {
-        "name": "Módulo guardrails",
+        "name": "Módulo guardrails - interno",
         "message": "explícame module_guardrails_no_inventar",
         "expected_document": True,
         "expected_catalog": False,
+        "expected_internal": True,
     },
     {
-        "name": "Visión archivos",
+        "name": "Visión archivos - interno",
         "message": "qué hace module_vision_archivos",
         "expected_document": True,
         "expected_catalog": False,
+        "expected_internal": True,
     },
     {
         "name": "Documento explícito",
         "message": "revisa este manual técnico",
         "expected_document": True,
         "expected_catalog": False,
+        "expected_internal": False,
     },
     {
-        "name": "Ficha técnica",
+        "name": "Ficha técnica producto",
         "message": "qué dice la ficha tecnica del variador",
         "expected_document": True,
         "expected_catalog": True,
+        "expected_internal": False,
     },
     {
         "name": "Archivo adjunto",
@@ -90,6 +100,7 @@ TEST_CASES = [
         },
         "expected_document": True,
         "expected_catalog": False,
+        "expected_internal": False,
     },
 ]
 
@@ -140,8 +151,18 @@ def main() -> None:
 
         document_ok = result.get("use_document_context") == case["expected_document"]
         catalog_ok = result.get("prioritize_catalog") == case["expected_catalog"]
+        internal_ok = result.get("is_internal_nia_query") == case["expected_internal"]
 
-        ok = document_ok and catalog_ok
+        # Si es consulta interna, debe tener respuesta pública segura.
+        public_guardrail_ok = True
+
+        if case["expected_internal"]:
+            public_guardrail_ok = (
+                result.get("allow_public_disclosure") is False
+                and bool(result.get("public_safe_response"))
+            )
+
+        ok = document_ok and catalog_ok and internal_ok and public_guardrail_ok
 
         if ok:
             passed += 1
@@ -155,6 +176,7 @@ def main() -> None:
             "expected": {
                 "use_document_context": case["expected_document"],
                 "prioritize_catalog": case["expected_catalog"],
+                "is_internal_nia_query": case["expected_internal"],
             },
             "actual": {
                 "use_document_context": result.get("use_document_context"),
@@ -162,6 +184,9 @@ def main() -> None:
                 "source_type": result.get("source_type"),
                 "confidence": result.get("confidence"),
                 "reason": result.get("reason"),
+                "is_internal_nia_query": result.get("is_internal_nia_query"),
+                "allow_public_disclosure": result.get("allow_public_disclosure"),
+                "public_safe_response": result.get("public_safe_response"),
             },
         })
 
