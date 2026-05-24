@@ -3,7 +3,7 @@
 # ============================================================
 # RESPONSABILIDAD:
 # Cargar los JSON del cerebro operativo de NIA compartidos
-# por Don Andrés.
+# 
 #
 # Este módulo es el puente entre:
 # - knowledge/nia_os/module_index.json
