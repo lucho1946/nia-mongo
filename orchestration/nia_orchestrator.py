@@ -57,7 +57,9 @@ from memory.conversation_memory import (
     append_assistant_message,
     increment_technical_questions,
     reset_technical_questions,
+    reset_technical_context,
     get_technical_questions_asked,
+    extract_exact_product_code,
 )
 
 from knowledge.catalog_knowledge import (
@@ -75,6 +77,10 @@ from knowledge.nia_os_loader import (
 
 from knowledge.document_policy import (
     evaluate_document_policy,
+)
+
+from orchestration.commercial_continuity import (
+    build_commercial_continuity_response,
 )
 
 
@@ -163,28 +169,26 @@ def _is_clean_greeting(message: str) -> bool:
     return bool(tokens) and tokens.issubset(greeting_tokens)
 
 
+def _extract_exact_code_from_message(message: str) -> Optional[str]:
+    """
+    Extrae un código exacto de producto aunque venga dentro de una frase.
+
+    Ejemplos:
+    - P382280
+    - busco el P382280
+    - necesito el producto P382280
+    - me cotizas P382280
+
+    Esto evita que la memoria anterior contamine búsquedas por código.
+    """
+    return extract_exact_product_code(message)
+
+
 def _looks_like_exact_code(message: str) -> bool:
     """
-    Reconoce códigos exactos tipo:
-    - P382280
-    - 253813
-    - 123456
-
-    Evita confundir:
-    - 200nm
-    - 220v
-    - 5hp
-    - 16 entradas
+    Compatibilidad con lógica anterior.
     """
-    text = (message or "").strip()
-
-    if re.fullmatch(r"P[0-9]{4,}[A-Za-z0-9]*", text, flags=re.IGNORECASE):
-        return True
-
-    if re.fullmatch(r"[0-9]{6,}", text):
-        return True
-
-    return False
+    return _extract_exact_code_from_message(message) is not None
 
 
 def _has_product_context(context: Dict[str, Any]) -> bool:
@@ -1487,6 +1491,38 @@ def process_message(
             safe_public_response,
             nia_os_context,
         )
+    
+    # --------------------------------------------------------
+    # 3.3. Continuidad comercial con último producto seleccionado
+    # --------------------------------------------------------
+    # Si el usuario ya seleccionó un producto y luego dice:
+    # - "Envíame una cotización"
+    # - "Quiero cotizar"
+    # - "Lo quiero"
+    # - "Me interesa"
+    #
+    # NIA debe continuar con ese producto.
+    # NO debe ejecutar search_products("Enviame una cotizacion").
+    # --------------------------------------------------------
+    commercial_continuity_response = build_commercial_continuity_response(
+        session=session,
+        message=message,
+        detected_intent=detected_intent,
+    )
+
+    if commercial_continuity_response:
+        session["estado_negociacion"] = "cotizacion_en_proceso"
+
+        append_assistant_message(
+            session,
+            commercial_continuity_response.get("response", ""),
+        )
+        save_session(session)
+
+        return _attach_nia_os_metadata(
+            commercial_continuity_response,
+            nia_os_context,
+        )
 
     # --------------------------------------------------------
     # 4. Saludo puro
@@ -1502,11 +1538,32 @@ def process_message(
 
         return _attach_nia_os_metadata(final_response, nia_os_context)
 
+        # --------------------------------------------------------
+    # 5. Código exacto dentro de cualquier frase
     # --------------------------------------------------------
-    # 5. Código exacto
+    # Regla fuerte:
+    # Si el usuario menciona un código exacto, el código manda.
+    # Se ignora/limpia contexto anterior para evitar contaminación
+    # de memoria, por ejemplo:
+    # - antes: "precio variador 3hp 220v"
+    # - después: "busco el P382280"
+    # Debe buscar P382280, no seguir en variador.
     # --------------------------------------------------------
-    if _looks_like_exact_code(message):
-        code_results = search_exact_code(message.strip())
+    exact_code = (
+        _extract_exact_code_from_message(message)
+        or intent_data.get("code")
+    )
+
+    if exact_code:
+        exact_code = str(exact_code).strip()
+
+        reset_technical_context(session, preserve_history=True)
+
+        session.setdefault("context", {})
+        session["context"]["codigo_producto"] = exact_code
+        session["context"]["referencia"] = exact_code
+
+        code_results = search_exact_code(exact_code)
 
         payload = _build_payload_from_results("codigo_producto", code_results)
 
@@ -1514,6 +1571,7 @@ def process_message(
             intent_data={
                 **intent_data,
                 "intent": "codigo_producto",
+                "code": exact_code,
             },
             search_payload=payload,
         )
@@ -1526,10 +1584,13 @@ def process_message(
         save_session(session)
 
         final_response["session_id"] = session_id
-        final_response["context"] = context
+        final_response["context"] = session.get("context", {})
+        final_response["decision_reason"] = "exact_code_detected_inside_message"
+        final_response["exact_code"] = exact_code
 
         return _attach_nia_os_metadata(final_response, nia_os_context)
-
+    
+    
     # --------------------------------------------------------
     # 6. Comercial genérico sin producto
     # --------------------------------------------------------
@@ -1566,6 +1627,42 @@ def process_message(
     )
 
     technical_questions_asked = get_technical_questions_asked(session)
+    
+    # --------------------------------------------------------
+    # 7.1. Regla fuerte para torquímetros
+    # --------------------------------------------------------
+    # Si el usuario pide un torquímetro pero aún no dio capacidad,
+    # NIA debe preguntar la medida antes de recomendar.
+    #
+    # Esto evita recomendar productos incompatibles como:
+    # - usuario pide torquímetro
+    # - NIA recomienda 2000 pies-libras sin saber si necesita 200 Nm
+    # --------------------------------------------------------
+    if (
+        context.get("familia") == "herramienta"
+        and context.get("subtipo") == "torquimetro"
+        and not context.get("medida")
+        and technical_questions_asked < 3
+    ):
+        response = "¿Qué medida, tamaño o capacidad necesitas? Por ejemplo: 200 Nm, 100 Nm o 50 Nm."
+
+        increment_technical_questions(session)
+        append_assistant_message(session, response)
+        save_session(session)
+
+        result = {
+            "intent": detected_intent,
+            "response": response,
+            "needs_clarification": True,
+            "context": context,
+            "session_id": session_id,
+            "decision_reason": "torquimetro_missing_measure",
+            "compatible_count": 0,
+        }
+
+        return _attach_nia_os_metadata(result, nia_os_context)
+    
+    
 
     # --------------------------------------------------------
     # 8. Si hay resultados compatibles + contexto útil, recomendar.

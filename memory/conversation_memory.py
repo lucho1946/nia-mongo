@@ -4,16 +4,24 @@
 # RESPONSABILIDAD:
 # Manejo de memoria conversacional de NIA.
 #
-# Enfoque alineado:
+# Enfoque alineado con Don Andrés:
 # - Mantener contexto conversacional por sesión.
 # - Evitar que el cliente repita información.
 # - Acumular datos técnicos útiles antes de buscar.
 # - Limpiar contexto cuando el usuario cambia de producto/familia.
+# - Detectar códigos exactos aunque vengan dentro de frases.
+# - Recordar último producto seleccionado para continuidad comercial.
 # - No inventar datos: solo guarda señales claras del usuario.
 #
-# Este módulo NO hace retrieval.
-# Este módulo NO genera respuestas comerciales.
-# Este módulo SOLO administra memoria y extracción básica de contexto.
+# NOTA PRODUCTIVA:
+# Hoy este módulo mantiene memoria en RAM para desarrollo local.
+# La versión siguiente debe persistir esta estructura en MongoDB
+# con TTL máximo de 8 días:
+#
+# 8 días = 8 * 24 * 60 * 60 = 691200 segundos
+#
+# Índice esperado en MongoDB:
+# db.sessions.createIndex({ "updated_at": 1 }, { expireAfterSeconds: 691200 })
 # ============================================================
 
 from __future__ import annotations
@@ -29,9 +37,6 @@ from typing import Any, Dict, List, Optional
 # ============================================================
 # STORAGE TEMPORAL EN MEMORIA
 # ============================================================
-# En producción esto debe persistirse en MongoDB Atlas,
-# colección sessions, con TTL de 30 minutos.
-# ============================================================
 
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
 
@@ -41,17 +46,15 @@ _SESSIONS: Dict[str, Dict[str, Any]] = {}
 # ============================================================
 
 MAX_HISTORY_MESSAGES = 30
+SESSION_TTL_SECONDS = 691200  # 8 días
 
 TECHNICAL_CONTEXT_KEYS = [
-    # Identificación / clasificación
     "familia",
     "categoria",
     "subtipo",
     "codigo_producto",
     "referencia",
     "marca",
-
-    # Datos técnicos generales
     "rango",
     "voltaje",
     "potencia",
@@ -63,8 +66,6 @@ TECHNICAL_CONTEXT_KEYS = [
     "medida",
     "material",
     "aplicacion",
-
-    # Instrumentación / medición
     "salida",
     "presion",
     "temperatura",
@@ -72,21 +73,13 @@ TECHNICAL_CONTEXT_KEYS = [
     "nivel",
     "precision",
     "resolucion",
-
-    # Automatización / eléctrico
     "entradas",
     "salidas",
     "comunicacion",
     "fase",
-
-    # Neumática / válvulas
     "tipo_accion",
     "fluido",
-
-    # UPS / energía
     "autonomia",
-
-    # Otros
     "conectividad",
     "lente",
 ]
@@ -97,7 +90,9 @@ TECHNICAL_CONTEXT_KEYS = [
 # ============================================================
 
 def _now_iso() -> str:
-    """Fecha actual en UTC ISO."""
+    """
+    Fecha actual en UTC ISO.
+    """
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -110,16 +105,57 @@ def _normalize(text: Any) -> str:
     """
     text = "" if text is None else str(text)
     text = text.lower().strip()
+
     text = "".join(
         c for c in unicodedata.normalize("NFKD", text)
         if not unicodedata.combining(c)
     )
+
     return re.sub(r"\s+", " ", text)
 
 
 def _is_empty(value: Any) -> bool:
-    """Determina si un valor no aporta contexto."""
+    """
+    Determina si un valor no aporta contexto.
+    """
     return value in [None, "", [], {}]
+
+
+def extract_exact_product_code(message: str) -> Optional[str]:
+    """
+    Extrae código de producto aunque venga dentro de una frase.
+
+    Ejemplos:
+    - P382280
+    - busco el P382280
+    - me cotizas el producto P382280
+    - producto 300203
+
+    Evita confundir:
+    - 220v
+    - 3hp
+    - 200nm
+    """
+    raw = str(message or "").strip()
+
+    if not raw:
+        return None
+
+    match_p = re.search(
+        r"\b(P[0-9]{4,}[A-Za-z0-9]*)\b",
+        raw,
+        flags=re.IGNORECASE,
+    )
+
+    if match_p:
+        return match_p.group(1).upper()
+
+    match_num = re.search(r"\b([0-9]{6,})\b", raw)
+
+    if match_num:
+        return match_num.group(1)
+
+    return None
 
 
 # ============================================================
@@ -127,20 +163,34 @@ def _is_empty(value: Any) -> bool:
 # ============================================================
 
 def _build_empty_session() -> Dict[str, Any]:
-    """Estructura estándar de memoria conversacional."""
+    """
+    Estructura estándar de memoria conversacional.
+    """
     now = _now_iso()
 
     return {
         "session_id": str(uuid.uuid4()),
         "created_at": now,
         "updated_at": now,
+        "expires_in_seconds": SESSION_TTL_SECONDS,
+
+        # Estado conversacional
         "intent_actual": None,
         "estado": "inicio",
         "technical_questions_asked": 0,
+
+        # Historial y contexto
         "history": [],
         "context": {key: None for key in TECHNICAL_CONTEXT_KEYS},
         "filters": {},
+
+        # Resultados / selección comercial
         "last_results": [],
+        "last_selected_product": None,
+        "last_selected_product_code": None,
+        "estado_negociacion": None,
+
+        # Flags de conversación
         "pending_questions": [],
         "needs_clarification": False,
         "conversation_complete": False,
@@ -152,31 +202,43 @@ def _build_empty_session() -> Dict[str, Any]:
 # ============================================================
 
 def create_session() -> Dict[str, Any]:
-    """Crea una nueva sesión conversacional."""
+    """
+    Crea una nueva sesión conversacional.
+    """
     session = _build_empty_session()
     _SESSIONS[session["session_id"]] = deepcopy(session)
     return deepcopy(session)
 
 
 def get_session(session_id: str) -> Optional[Dict[str, Any]]:
-    """Recupera una sesión existente."""
+    """
+    Recupera una sesión existente.
+    """
     session = _SESSIONS.get(session_id)
+
     if not session:
         return None
+
     return deepcopy(session)
 
 
 def save_session(session: Dict[str, Any]) -> None:
-    """Guarda cambios de una sesión."""
+    """
+    Guarda cambios de una sesión.
+    """
     session["updated_at"] = _now_iso()
+    session["expires_in_seconds"] = SESSION_TTL_SECONDS
     _SESSIONS[session["session_id"]] = deepcopy(session)
 
 
 def clear_session(session_id: str) -> bool:
-    """Elimina sesión completamente."""
+    """
+    Elimina sesión completamente.
+    """
     if session_id in _SESSIONS:
         del _SESSIONS[session_id]
         return True
+
     return False
 
 
@@ -185,7 +247,9 @@ def clear_session(session_id: str) -> bool:
 # ============================================================
 
 def append_message(session: Dict[str, Any], role: str, content: str) -> Dict[str, Any]:
-    """Agrega mensaje al historial conversacional."""
+    """
+    Agrega mensaje al historial conversacional.
+    """
     history = session.get("history", [])
 
     history.append({
@@ -199,11 +263,14 @@ def append_message(session: Dict[str, Any], role: str, content: str) -> Dict[str
 
     session["history"] = history
     session["updated_at"] = _now_iso()
+
     return session
 
 
 def append_assistant_message(session: Dict[str, Any], content: str) -> Dict[str, Any]:
-    """Registra una respuesta de NIA en el historial."""
+    """
+    Registra una respuesta de NIA en el historial.
+    """
     return append_message(session, role="assistant", content=content)
 
 
@@ -212,30 +279,46 @@ def append_assistant_message(session: Dict[str, Any], content: str) -> Dict[str,
 # ============================================================
 
 def update_context(session: Dict[str, Any], new_context: Dict[str, Any]) -> Dict[str, Any]:
-    """Actualiza contexto conversacional sin sobrescribir con vacíos."""
+    """
+    Actualiza contexto conversacional sin sobrescribir con vacíos.
+    """
     context = session.get("context", {})
 
     for key, value in new_context.items():
         if _is_empty(value):
             continue
-        context[key] = value
+
+        if key in TECHNICAL_CONTEXT_KEYS:
+            context[key] = value
 
     session["context"] = context
     return session
 
 
-def reset_technical_context(session: Dict[str, Any], preserve_history: bool = True) -> Dict[str, Any]:
+def reset_technical_context(
+    session: Dict[str, Any],
+    preserve_history: bool = True,
+    preserve_selected_product: bool = True,
+) -> Dict[str, Any]:
     """
     Limpia contexto técnico cuando cambia el producto/familia.
-    Evita contaminación entre consultas.
+
+    preserve_selected_product:
+    - True: mantiene último producto para continuidad comercial.
+    - False: limpia también selección comercial.
     """
     session["context"] = {key: None for key in TECHNICAL_CONTEXT_KEYS}
     session["filters"] = {}
-    session["last_results"] = []
     session["pending_questions"] = []
     session["needs_clarification"] = False
     session["conversation_complete"] = False
     session["technical_questions_asked"] = 0
+
+    if not preserve_selected_product:
+        session["last_results"] = []
+        session["last_selected_product"] = None
+        session["last_selected_product_code"] = None
+        session["estado_negociacion"] = None
 
     if not preserve_history:
         session["history"] = []
@@ -244,7 +327,9 @@ def reset_technical_context(session: Dict[str, Any], preserve_history: bool = Tr
 
 
 def get_context(session: Dict[str, Any]) -> Dict[str, Any]:
-    """Obtiene contexto técnico actual."""
+    """
+    Obtiene contexto técnico actual.
+    """
     return deepcopy(session.get("context", {}))
 
 
@@ -253,27 +338,136 @@ def get_context(session: Dict[str, Any]) -> Dict[str, Any]:
 # ============================================================
 
 def update_filters(session: Dict[str, Any], filters: Dict[str, Any]) -> Dict[str, Any]:
-    """Actualiza filtros activos para retrieval."""
+    """
+    Actualiza filtros activos para retrieval.
+    """
     current = session.get("filters", {})
 
     for key, value in filters.items():
         if _is_empty(value):
             continue
+
         current[key] = value
 
     session["filters"] = current
     return session
 
 
+def _normalize_product_for_memory(product: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normaliza un producto para guardarlo como selección comercial.
+
+    Mantiene el documento original lo suficiente para que response_engine
+    pueda crear cards, pero agrega campos estándar.
+    """
+    if not isinstance(product, dict):
+        return {}
+
+    codigo = (
+        product.get("codigo")
+        or product.get("CODIGO")
+        or ""
+    )
+
+    nombre = (
+        product.get("nombre")
+        or product.get("DESCRIPCION_CORTA_PRE")
+        or product.get("descripcion")
+        or ""
+    )
+
+    marca = (
+        product.get("marca")
+        or product.get("MARCA_LET")
+        or ""
+    )
+
+    referencia = (
+        product.get("referencia")
+        or product.get("REFERENCIA")
+        or ""
+    )
+
+    normalized = deepcopy(product)
+
+    normalized["codigo"] = str(codigo).strip()
+    normalized["nombre"] = str(nombre).strip()
+    normalized["marca"] = str(marca).strip()
+    normalized["referencia"] = str(referencia).strip()
+
+    return normalized
+
+
 def save_last_results(session: Dict[str, Any], results: List[dict]) -> Dict[str, Any]:
-    """Guarda últimos productos encontrados."""
-    session["last_results"] = results[:10]
+    """
+    Guarda últimos productos encontrados.
+
+    Si hay al menos un resultado, también guarda el primer producto como
+    last_selected_product para continuidad comercial.
+    """
+    safe_results = results[:10] if isinstance(results, list) else []
+    session["last_results"] = deepcopy(safe_results)
+
+    if safe_results:
+        set_last_selected_product(session, safe_results[0])
+
     return session
 
 
 def get_last_results(session: Dict[str, Any]) -> List[dict]:
-    """Recupera últimos resultados."""
+    """
+    Recupera últimos resultados.
+    """
     return deepcopy(session.get("last_results", []))
+
+
+def set_last_selected_product(
+    session: Dict[str, Any],
+    product: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Guarda el último producto seleccionado por NIA/usuario.
+
+    Esta es la pieza clave para:
+    - "Quiero cotizar este producto"
+    - "Envíame una cotización"
+    - "Lo quiero"
+    - "Solicitar cotización"
+    """
+    normalized = _normalize_product_for_memory(product)
+
+    if not normalized:
+        return session
+
+    codigo = normalized.get("codigo") or normalized.get("CODIGO")
+
+    session["last_selected_product"] = normalized
+    session["last_selected_product_code"] = str(codigo or "").strip() or None
+    session["estado_negociacion"] = "producto_seleccionado"
+
+    return session
+
+
+def get_last_selected_product(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Recupera último producto seleccionado.
+
+    Si no existe last_selected_product, intenta usar el primer last_result.
+    """
+    selected = session.get("last_selected_product")
+
+    if isinstance(selected, dict) and selected:
+        return deepcopy(selected)
+
+    last_results = session.get("last_results", [])
+
+    if isinstance(last_results, list) and last_results:
+        first = last_results[0]
+
+        if isinstance(first, dict):
+            return deepcopy(first)
+
+    return None
 
 
 # ============================================================
@@ -281,18 +475,24 @@ def get_last_results(session: Dict[str, Any]) -> List[dict]:
 # ============================================================
 
 def set_intent(session: Dict[str, Any], intent: str) -> Dict[str, Any]:
-    """Actualiza intención activa."""
+    """
+    Actualiza intención activa.
+    """
     session["intent_actual"] = intent
     return session
 
 
 def get_intent(session: Dict[str, Any]) -> Optional[str]:
-    """Obtiene intención activa."""
+    """
+    Obtiene intención activa.
+    """
     return session.get("intent_actual")
 
 
 def set_state(session: Dict[str, Any], state: str) -> Dict[str, Any]:
-    """Actualiza estado conversacional."""
+    """
+    Actualiza estado conversacional.
+    """
     session["estado"] = state
     return session
 
@@ -302,7 +502,9 @@ def set_state(session: Dict[str, Any], state: str) -> Dict[str, Any]:
 # ============================================================
 
 def get_technical_questions_asked(session: Dict[str, Any]) -> int:
-    """Obtiene cuántas preguntas técnicas ha hecho NIA."""
+    """
+    Obtiene cuántas preguntas técnicas ha hecho NIA.
+    """
     try:
         return int(session.get("technical_questions_asked", 0))
     except (TypeError, ValueError):
@@ -310,20 +512,26 @@ def get_technical_questions_asked(session: Dict[str, Any]) -> int:
 
 
 def set_technical_questions_asked(session: Dict[str, Any], value: int) -> Dict[str, Any]:
-    """Fija contador de preguntas técnicas."""
+    """
+    Fija contador de preguntas técnicas.
+    """
     session["technical_questions_asked"] = max(0, int(value))
     return session
 
 
 def increment_technical_questions(session: Dict[str, Any], step: int = 1) -> Dict[str, Any]:
-    """Incrementa contador de preguntas técnicas."""
+    """
+    Incrementa contador de preguntas técnicas.
+    """
     current = get_technical_questions_asked(session)
     session["technical_questions_asked"] = current + max(1, int(step))
     return session
 
 
 def reset_technical_questions(session: Dict[str, Any]) -> Dict[str, Any]:
-    """Reinicia contador de preguntas técnicas."""
+    """
+    Reinicia contador de preguntas técnicas.
+    """
     session["technical_questions_asked"] = 0
     return session
 
@@ -333,7 +541,9 @@ def reset_technical_questions(session: Dict[str, Any]) -> Dict[str, Any]:
 # ============================================================
 
 def add_pending_question(session: Dict[str, Any], question: str) -> Dict[str, Any]:
-    """Agrega pregunta pendiente."""
+    """
+    Agrega pregunta pendiente.
+    """
     pending = session.get("pending_questions", [])
 
     if question and question not in pending:
@@ -344,7 +554,9 @@ def add_pending_question(session: Dict[str, Any], question: str) -> Dict[str, An
 
 
 def pop_pending_question(session: Dict[str, Any]) -> Optional[str]:
-    """Extrae siguiente pregunta pendiente."""
+    """
+    Extrae siguiente pregunta pendiente.
+    """
     pending = session.get("pending_questions", [])
 
     if not pending:
@@ -352,17 +564,22 @@ def pop_pending_question(session: Dict[str, Any]) -> Optional[str]:
 
     question = pending.pop(0)
     session["pending_questions"] = pending
+
     return question
 
 
 def set_needs_clarification(session: Dict[str, Any], value: bool) -> Dict[str, Any]:
-    """Marca si NIA necesita más contexto."""
+    """
+    Marca si NIA necesita más contexto.
+    """
     session["needs_clarification"] = value
     return session
 
 
 def set_conversation_complete(session: Dict[str, Any], value: bool) -> Dict[str, Any]:
-    """Marca conversación como completada."""
+    """
+    Marca conversación como completada.
+    """
     session["conversation_complete"] = value
     return session
 
@@ -372,12 +589,16 @@ def set_conversation_complete(session: Dict[str, Any], value: bool) -> Dict[str,
 # ============================================================
 
 def list_sessions() -> List[dict]:
-    """Lista sesiones activas."""
+    """
+    Lista sesiones activas.
+    """
     return list(_SESSIONS.values())
 
 
 def get_session_count() -> int:
-    """Total sesiones activas."""
+    """
+    Total sesiones activas.
+    """
     return len(_SESSIONS)
 
 
@@ -388,47 +609,46 @@ def get_session_count() -> int:
 def extract_context_from_message(message: str) -> Dict[str, Any]:
     """
     Extrae contexto útil desde un mensaje.
-    No inventa: solo guarda señales claras del usuario.
+
+    No inventa:
+    solo guarda señales claras que el usuario escribió.
     """
     original = message or ""
     msg = _normalize(original)
     context: Dict[str, Any] = {}
 
     # --------------------------------------------------------
-    # Código / referencia exacta
+    # Código / referencia exacta dentro de frase
     # --------------------------------------------------------
-    if re.fullmatch(r"p[0-9]{4,}[a-z0-9]*", msg):
-        context["codigo_producto"] = original.strip()
-        context["referencia"] = original.strip()
-        return context
+    exact_code = extract_exact_product_code(original)
 
-    if re.fullmatch(r"[0-9]{6,}", msg):
-        context["codigo_producto"] = original.strip()
-        context["referencia"] = original.strip()
+    if exact_code:
+        context["codigo_producto"] = exact_code
+        context["referencia"] = exact_code
         return context
 
     # --------------------------------------------------------
     # Familia / categoría amplia
     # --------------------------------------------------------
-    if any(w in msg for w in ["sensor", "transmisor", "sonda", "detector"]):
+    if any(w in msg for w in ["sensor", "sensores", "transmisor", "sonda", "detector"]):
         context["familia"] = "sensor"
 
-    elif "motorreductor" in msg:
+    elif "motorreductor" in msg or "motor reductor" in msg:
         context["familia"] = "motorreductor"
+
+    elif any(w in msg for w in ["variador", "variadores", "drive", "vfd", "arrancador", "inversor de frecuencia"]):
+        context["familia"] = "variador"
 
     elif "motor" in msg:
         context["familia"] = "motor"
 
-    elif any(w in msg for w in ["variador", "drive", "vfd", "arrancador"]):
-        context["familia"] = "variador"
-
     elif any(w in msg for w in ["plc", "hmi", "controlador logico", "controlador lógico"]):
         context["familia"] = "plc"
 
-    elif any(w in msg for w in ["valvula", "válvula", "electrovalvula", "electroválvula", "cilindro"]):
+    elif any(w in msg for w in ["valvula", "valvulas", "válvula", "válvulas", "electrovalvula", "electroválvula", "cilindro"]):
         context["familia"] = "valvula"
 
-    elif any(w in msg for w in ["termometro", "termómetro", "camara termica", "cámara térmica", "multimetro", "multímetro"]):
+    elif any(w in msg for w in ["termometro", "termómetro", "camara termica", "cámara térmica", "multimetro", "multímetro", "anemometro", "anemómetro"]):
         context["familia"] = "medicion"
 
     elif any(w in msg for w in ["ups", "nobreak", "no break"]):
@@ -472,6 +692,7 @@ def extract_context_from_message(message: str) -> Dict[str, Any]:
         "danfoss", "yaskawa", "camozzi", "norgren", "parker",
         "dayton", "proto", "black-decker", "cool-line", "horiba",
         "fluke", "honeywell", "allen bradley", "rockwell",
+        "xinje", "array", "lutron",
     ]
 
     for brand in known_brands:
@@ -558,8 +779,6 @@ def extract_context_from_message(message: str) -> Dict[str, Any]:
     if re.search(r"\b\d+(\.\d+)?\s*(nm|n.m|n-m)\b", msg):
         context["medida"] = original.strip()
 
-        # Si ya veníamos en herramienta, esta medida suele ser torque.
-        # Para evitar recomendar "herramientas" genéricas, fijamos subtipo.
         if context.get("familia") == "herramienta" or "torquimetro" in msg:
             context["subtipo"] = "torquimetro"
 
@@ -589,6 +808,7 @@ def process_memory_update(
     - guarda mensaje
     - extrae contexto
     - limpia contexto si cambia la familia
+    - limpia contexto si llega un código exacto nuevo
     - actualiza intención
     """
     append_message(session, role="user", content=user_message)
@@ -602,24 +822,62 @@ def process_memory_update(
     current_family = current_context.get("familia")
     new_family = extracted.get("familia")
 
-    # Si cambia de familia, limpiar filtros técnicos anteriores.
-    if new_family and current_family and new_family != current_family:
-        reset_technical_context(session, preserve_history=True)
+    # --------------------------------------------------------
+    # Caso prioritario: código exacto.
+    # --------------------------------------------------------
+    # Si el usuario escribe "busco el P382280" o "Perdón es el 300203",
+    # ese código manda por encima de cualquier contexto anterior.
+    # Conservamos last_selected_product hasta que el orquestador confirme
+    # el nuevo producto encontrado.
+    # --------------------------------------------------------
+    if extracted.get("codigo_producto"):
+        reset_technical_context(
+            session,
+            preserve_history=True,
+            preserve_selected_product=True,
+        )
+        update_context(session, extracted)
+        reset_technical_questions(session)
+        return session
 
+    # --------------------------------------------------------
+    # Si el usuario ahora habla de una familia de producto,
+    # y la memoria venía de un código exacto anterior, limpiamos
+    # ese código para evitar contaminación.
+    # --------------------------------------------------------
+    if new_family and current_context.get("codigo_producto"):
+        reset_technical_context(
+            session,
+            preserve_history=True,
+            preserve_selected_product=True,
+        )
+        current_context = session.get("context", {})
+        current_family = current_context.get("familia")
+
+    # --------------------------------------------------------
+    # Si cambia de familia, limpiar filtros técnicos anteriores.
+    # --------------------------------------------------------
+    if new_family and current_family and new_family != current_family:
+        reset_technical_context(
+            session,
+            preserve_history=True,
+            preserve_selected_product=False,
+        )
+
+    # --------------------------------------------------------
     # Caso especial:
     # Si ya estábamos en herramienta y el usuario responde "200nm",
     # se interpreta como torque de torquímetro.
+    # --------------------------------------------------------
     if (
         current_context.get("familia") == "herramienta"
         and extracted.get("medida")
         and "nm" in _normalize(extracted.get("medida"))
         and not extracted.get("subtipo")
     ):
+        extracted["familia"] = "herramienta"
         extracted["subtipo"] = "torquimetro"
 
     update_context(session, extracted)
-
-    if extracted.get("codigo_producto"):
-        reset_technical_questions(session)
 
     return session
