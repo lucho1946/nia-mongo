@@ -258,11 +258,11 @@ def build_commercial_continuity_response(
 
     response = (
         "Claro. Puedo ayudarte a iniciar la cotización del producto seleccionado:\n\n"
-        f"**Producto:** {nombre or 'Producto seleccionado'}\n"
-        f"**Código:** {codigo or 'Sin código disponible'}\n"
-        f"**Marca:** {marca or 'No especificada'}\n"
-        f"**Precio:** {precio}\n"
-        f"**Disponibilidad:** {disponibilidad_txt}\n\n"
+        f"Producto: {nombre or 'Producto seleccionado'}\n"
+        f"Código: {codigo or 'Sin código disponible'}\n"
+        f"Marca: {marca or 'No especificada'}\n"
+        f"Precio: {precio}\n"
+        f"Disponibilidad: {disponibilidad_txt}\n\n"
         "Para continuar con la cotización, ¿me confirmas nombre, empresa, "
         "correo o teléfono de contacto?"
     )
