@@ -430,13 +430,8 @@ def build_commercial_continuity_response(
     if tiempo_entrega and tiempo_entrega not in disponibilidad_txt:
         disponibilidad_txt = f"{disponibilidad} · {tiempo_entrega}"
 
-    response = (
-        "Claro. Puedo ayudarte a iniciar la cotización del producto seleccionado:\n\n"
-        f"Producto: {nombre or 'Producto seleccionado'}\n"
-        f"Código: {codigo or 'Sin código disponible'}\n"
-        f"Marca: {marca or 'No especificada'}\n"
-        f"Precio: {precio}\n"
-        f"Disponibilidad: {disponibilidad_txt}\n\n"
+        response = (
+        "Claro. Puedo ayudarte a iniciar la cotización del producto que quieres.\n\n"
         "Para continuar con la cotización, ¿me confirmas nombre, empresa, "
         "correo o teléfono de contacto?"
     )

@@ -421,8 +421,8 @@ def main() -> None:
     )
 
     assert_condition(
-        "P256146" in sensor_cotizacion.respuesta,
-        "NIA debe cotizar el código explícito P256146.",
+        "P256146" not in sensor_cotizacion.respuesta,
+        "La respuesta visible no debe mostrar el código del producto seleccionado.",
     )
 
     assert_condition(
@@ -479,10 +479,10 @@ def main() -> None:
     )
 
     assert_condition(
-        "300203" in exacto_3.respuesta,
-        "NIA debe continuar la cotización con el producto 300203.",
+        "300203" not in exacto_3.respuesta,
+        "La respuesta visible no debe mostrar el código del producto seleccionado.",
     )
-
+    
     assert_condition(
         len(exacto_3.productos) >= 1,
         "NIA debe devolver el producto activo 300203 en la cotización.",
