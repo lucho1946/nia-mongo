@@ -37,6 +37,11 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from memory.slot_response_detector import detect_slot_response
+from memory.mongo_session_store import (
+    save_session_to_mongo,
+    get_session_from_mongo,
+    delete_session_from_mongo,
+)
 
 
 # ============================================================
@@ -248,42 +253,112 @@ def _build_empty_session() -> Dict[str, Any]:
 def create_session() -> Dict[str, Any]:
     """
     Crea una nueva sesión conversacional.
+
+    Estrategia:
+    - Guarda en RAM para desarrollo local.
+    - Intenta guardar también en MongoDB para producción/Azure.
+    - Si Mongo no está disponible localmente, el sistema sigue vivo.
     """
     session = _build_empty_session()
+
+    # Fallback local en RAM.
     _SESSIONS[session["session_id"]] = deepcopy(session)
+
+    # Persistencia productiva.
+    # Si falla, mongo_session_store retorna False y no rompe NIA.
+    save_session_to_mongo(session)
+
     return deepcopy(session)
 
 
 def get_session(session_id: str) -> Optional[Dict[str, Any]]:
     """
     Recupera una sesión existente.
-    """
-    session = _SESSIONS.get(session_id)
 
-    if not session:
+    Orden:
+    1. RAM local, si existe.
+    2. MongoDB, si no está en RAM.
+
+    Esto permite:
+    - Desarrollo local rápido.
+    - Producción en Azure con múltiples workers.
+    """
+    session_id = str(session_id or "").strip()
+
+    if not session_id:
         return None
 
-    return deepcopy(session)
+    # 1. Intento rápido en RAM.
+    session = _SESSIONS.get(session_id)
+
+    if session:
+        return deepcopy(session)
+
+    # 2. Fallback productivo desde MongoDB.
+    mongo_session = get_session_from_mongo(session_id)
+
+    if mongo_session:
+        # Rehidrata RAM del worker actual para próximas llamadas.
+        _SESSIONS[session_id] = deepcopy(mongo_session)
+        return deepcopy(mongo_session)
+
+    return None
 
 
 def save_session(session: Dict[str, Any]) -> None:
     """
     Guarda cambios de una sesión.
+
+    Guarda en:
+    - RAM: fallback local.
+    - MongoDB: persistencia real para Azure.
+
+    MongoDB es necesario para conservar:
+    - último producto seleccionado
+    - slot pendiente
+    - última pregunta
+    - historial
+    - contexto técnico
+    entre requests y workers distintos.
     """
+    if not isinstance(session, dict):
+        return
+
+    session_id = session.get("session_id")
+
+    if not session_id:
+        return
+
     session["updated_at"] = _now_iso()
     session["expires_in_seconds"] = SESSION_TTL_SECONDS
-    _SESSIONS[session["session_id"]] = deepcopy(session)
+
+    # Fallback local.
+    _SESSIONS[session_id] = deepcopy(session)
+
+    # Persistencia productiva.
+    save_session_to_mongo(session)
 
 
 def clear_session(session_id: str) -> bool:
     """
     Elimina sesión completamente.
+
+    Borra tanto de RAM como de MongoDB.
     """
+    session_id = str(session_id or "").strip()
+
+    if not session_id:
+        return False
+
+    removed = False
+
     if session_id in _SESSIONS:
         del _SESSIONS[session_id]
-        return True
+        removed = True
 
-    return False
+    mongo_removed = delete_session_from_mongo(session_id)
+
+    return removed or mongo_removed
 
 
 # ============================================================
