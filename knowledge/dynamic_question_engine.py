@@ -6,8 +6,8 @@
 #
 # Este módulo usa:
 # - contexto conversacional acumulado
-# - señales del catálogo
-# - reglas comerciales del documento maestro
+# - señales técnicas extraídas del mensaje
+# - reglas comerciales del Documento Maestro
 #
 # Objetivo:
 # Reducir preguntas genéricas y preguntar solo lo útil antes
@@ -16,25 +16,23 @@
 # IMPORTANTE:
 # Este módulo NO hace retrieval.
 # Este módulo NO responde recomendaciones.
+# Este módulo NO busca productos.
 # Este módulo SOLO decide si conviene preguntar algo más.
 #
-# CAMBIO CLAVE:
-# Ahora el motor no pregunta campos técnicos infinitamente si ya
-# existe contexto comercial suficiente para buscar.
+# CAMBIO CLAVE DE CONTEXTO ACTIVO:
+# - Si el usuario solo dice "necesito un producto", NIA NO debe
+#   preguntar marca primero.
+# - Primero debe preguntar qué producto busca o para qué aplicación.
+# - Si el usuario ya respondió un subtipo fuerte, por ejemplo
+#   "sensor fotoeléctrico", el sistema puede buscar sin repetir
+#   "¿Qué tipo específico necesitas?"
 #
-# Ejemplo corregido:
-# - motor siemens
-# - 5hp
-# - 220v
-#
-# Antes:
-# - Preguntaba RPM.
-#
-# Ahora:
-# - Decide buscar con marca + potencia + voltaje.
-#
-# Esto respeta la regla del Documento Maestro:
-# máximo 3 preguntas técnicas antes de recomendar/buscar.
+# Enfoque alineado con Don Andrés:
+# - máximo 3 preguntas técnicas
+# - catálogo real
+# - no inventar
+# - no preguntar por preguntar
+# - mantener hilo conversacional
 # ============================================================
 
 from __future__ import annotations
@@ -52,9 +50,22 @@ MAX_TECHNICAL_QUESTIONS = 3
 # ============================================================
 # BANCO GENERAL DE PREGUNTAS
 # ============================================================
+# Cada pregunta está asociada a un "field" o slot.
+#
+# El orquestador debe guardar:
+# - last_assistant_question_field
+# - last_assistant_question_text
+# - slot_pendiente
+#
+# Así, cuando el usuario responda, conversation_memory.py puede
+# interpretar esa respuesta según la última pregunta.
 
 QUESTION_BANK: Dict[str, str] = {
-    "subtipo": "¿Qué tipo específico necesitas?",
+    # Pregunta inicial para solicitudes muy genéricas.
+    "producto_o_aplicacion": "Claro. ¿Qué producto buscas o para qué aplicación lo necesitas?",
+
+    # Preguntas técnicas/comerciales.
+    "subtipo": "¿Qué tipo específico necesitas? Por ejemplo: fotoeléctrico, inductivo, capacitivo, presión o temperatura.",
     "rango": "¿Qué rango de operación o medición necesitas?",
     "salida": "¿Qué salida requiere? Ej: 4-20 mA, 0-10V, PNP o NPN.",
     "conexion": "¿Qué conexión, rosca o montaje necesitas?",
@@ -80,11 +91,19 @@ QUESTION_BANK: Dict[str, str] = {
 # ============================================================
 # PRIORIDAD GENERAL
 # ============================================================
+# IMPORTANTE:
+# Antes el flujo podía preguntar "marca" demasiado pronto.
+#
+# Ahora, para contexto genérico sin identidad de producto,
+# decide_next_step() intercepta primero con producto_o_aplicacion.
+#
+# Esta prioridad se usa cuando ya existe algo de identidad o cuando
+# el orquestador no envía prioridad específica.
 
 GENERAL_PRIORITY: List[str] = [
     "referencia",
-    "marca",
     "aplicacion",
+    "marca",
 ]
 
 
@@ -95,8 +114,8 @@ GENERAL_PRIORITY: List[str] = [
 def _normalize_value(value: Any) -> str:
     """
     Convierte un valor a texto normalizado simple.
-    No remueve acentos aquí porque este módulo solo necesita
-    validar presencia y reglas de contexto.
+    No remueve acentos porque aquí solo necesitamos validar presencia
+    y reglas de contexto ya normalizadas por otros módulos.
     """
     if value is None:
         return ""
@@ -175,6 +194,9 @@ def _count_context_signals(context: Dict[str, Any]) -> int:
         "corriente",
         "fase",
         "autonomia",
+        "material",
+        "precision",
+        "resolucion",
     ]
 
     return sum(
@@ -196,6 +218,82 @@ def _build_question(field: str) -> Optional[Dict[str, Any]]:
         "field": field,
         "question": question,
     }
+
+
+def _has_product_identity(context: Dict[str, Any]) -> bool:
+    """
+    Determina si ya hay una identidad mínima de producto.
+
+    Si no existe familia, categoría, subtipo, código, referencia
+    ni aplicación, NIA no debe preguntar marca todavía.
+    Primero debe preguntar qué producto busca o para qué aplicación.
+    """
+    identity_fields = [
+        "familia",
+        "categoria",
+        "subtipo",
+        "codigo_producto",
+        "referencia",
+        "aplicacion",
+    ]
+
+    return any(
+        _has_context_value(context, field)
+        for field in identity_fields
+    )
+
+
+def _brand_was_declined(context: Dict[str, Any]) -> bool:
+    """
+    Detecta si el usuario ya dijo que no tiene marca o no le importa.
+    """
+    if context.get("marca_descartada") is True:
+        return True
+
+    status = _normalize_value(context.get("brand_preference_status"))
+
+    return status in ["no_preference", "unknown", "declined"]
+
+
+def _reference_was_declined(context: Dict[str, Any]) -> bool:
+    """
+    Detecta si el usuario ya dijo que no tiene referencia/código.
+    """
+    if context.get("referencia_descartada") is True:
+        return True
+
+    status = _normalize_value(context.get("reference_status"))
+
+    return status in ["unknown", "declined"]
+
+
+def _application_was_declined(context: Dict[str, Any]) -> bool:
+    """
+    Detecta si el usuario no conoce o no quiere dar aplicación.
+    """
+    if context.get("aplicacion_descartada") is True:
+        return True
+
+    status = _normalize_value(context.get("application_status"))
+
+    return status in ["unknown", "declined"]
+
+
+def _field_should_be_skipped(context: Dict[str, Any], field: str) -> bool:
+    """
+    Decide si un campo ya no debe preguntarse porque el usuario
+    lo descartó o ya indicó que no lo conoce.
+    """
+    if field == "marca":
+        return _brand_was_declined(context)
+
+    if field == "referencia":
+        return _reference_was_declined(context)
+
+    if field == "aplicacion":
+        return _application_was_declined(context)
+
+    return False
 
 
 # ============================================================
@@ -240,12 +338,31 @@ def _has_enough_context_for_sensor(context: Dict[str, Any]) -> bool:
     """
     Sensor.
 
-    Datos mínimos para buscar:
-    - subtipo, por ejemplo presión, temperatura, nivel
-    - y al menos una señal técnica adicional como rango, salida,
-      conexión, voltaje o marca.
+    Reglas:
+    - Si es sensor de presión/temperatura/nivel/caudal, normalmente
+      se necesita una señal adicional como rango, salida, conexión,
+      voltaje o marca.
+    - Si el subtipo es de presencia/detección industrial
+      como fotoeléctrico, inductivo o capacitivo, el subtipo ya es
+      una señal fuerte para intentar buscar en catálogo.
     """
     has_subtype = _has_context_value(context, "subtipo")
+    subtype = _normalize_value(context.get("subtipo"))
+
+    # --------------------------------------------------------
+    # Sensores de detección/presencia.
+    # Si el usuario ya dijo "fotoeléctrico", "inductivo",
+    # "capacitivo", etc., no debemos repetir "¿qué tipo específico?".
+    # --------------------------------------------------------
+    if subtype in [
+        "fotoelectrico",
+        "inductivo",
+        "capacitivo",
+        "reflectivo",
+        "barrera",
+        "difuso",
+    ]:
+        return True
 
     has_extra_signal = any(
         _has_context_value(context, field)
@@ -257,6 +374,9 @@ def _has_enough_context_for_sensor(context: Dict[str, Any]) -> bool:
             "marca",
             "presion",
             "corriente",
+            "temperatura",
+            "nivel",
+            "caudal",
         ]
     )
 
@@ -372,6 +492,26 @@ def _has_enough_context_for_electrico(context: Dict[str, Any]) -> bool:
     return has_voltage_or_current and has_identity
 
 
+def _has_enough_context_for_medicion(context: Dict[str, Any]) -> bool:
+    """
+    Instrumentos de medición.
+
+    Puede buscar si hay familia medición y una señal como rango,
+    precisión, subtipo, marca o aplicación.
+    """
+    return any(
+        _has_context_value(context, field)
+        for field in [
+            "subtipo",
+            "rango",
+            "precision",
+            "resolucion",
+            "marca",
+            "aplicacion",
+        ]
+    )
+
+
 def _context_is_commercially_enough(context: Dict[str, Any]) -> bool:
     """
     Decide si ya existe contexto suficiente para buscar.
@@ -416,6 +556,9 @@ def _context_is_commercially_enough(context: Dict[str, Any]) -> bool:
     if family == "electrico":
         return _has_enough_context_for_electrico(context)
 
+    if family == "medicion":
+        return _has_enough_context_for_medicion(context)
+
     # Regla general:
     # Si ya hay familia/categoría y al menos 3 señales útiles,
     # se busca en vez de seguir preguntando.
@@ -453,6 +596,9 @@ def get_next_question_from_context(
     priority = priority_fields or GENERAL_PRIORITY
 
     for field in priority:
+        if _field_should_be_skipped(context, field):
+            continue
+
         if not _has_context_value(context, field):
             question = _build_question(field)
 
@@ -476,15 +622,35 @@ def decide_next_step(
 
     Reglas:
     1. Si ya llegó al máximo de preguntas técnicas, debe buscar.
-    2. Si ya hay contexto comercial suficiente, debe buscar.
-    3. Si falta un dato realmente útil, pregunta.
-    4. Si no hay pregunta útil, busca.
+    2. Si el usuario solo dio una intención muy genérica,
+       debe preguntar producto/aplicación antes que marca.
+    3. Si ya hay contexto comercial suficiente, debe buscar.
+    4. Si falta un dato realmente útil, pregunta.
+    5. Si no hay pregunta útil, busca.
     """
 
     if questions_asked >= MAX_TECHNICAL_QUESTIONS:
         return {
             "action": "search",
             "reason": "max_questions_reached",
+            "context": context,
+        }
+
+    # --------------------------------------------------------
+    # Caso genérico:
+    # Usuario: "necesito un producto"
+    #
+    # Si no hay identidad mínima de producto, no preguntamos marca.
+    # Primero preguntamos qué producto busca o para qué aplicación.
+    # --------------------------------------------------------
+    if not _has_product_identity(context):
+        return {
+            "action": "ask",
+            "question": {
+                "field": "producto_o_aplicacion",
+                "question": QUESTION_BANK["producto_o_aplicacion"],
+            },
+            "reason": "missing_product_identity",
             "context": context,
         }
 
@@ -543,6 +709,18 @@ def decide_with_catalog_knowledge(
         return {
             "action": "search",
             "reason": "max_questions_reached",
+            "context": context,
+        }
+
+    # Mismo guardrail para solicitudes demasiado genéricas.
+    if not _has_product_identity(context):
+        return {
+            "action": "ask",
+            "question": {
+                "field": "producto_o_aplicacion",
+                "question": QUESTION_BANK["producto_o_aplicacion"],
+            },
+            "reason": "missing_product_identity",
             "context": context,
         }
 
@@ -632,6 +810,7 @@ def explain_dynamic_decision(
         "priority_fields": priority_fields or GENERAL_PRIORITY,
         "commercial_context_enough": _context_is_commercially_enough(context),
         "context_signals": _count_context_signals(context),
+        "has_product_identity": _has_product_identity(context),
         "context": context,
         "decision": decision,
     }

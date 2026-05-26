@@ -4,13 +4,16 @@
 # RESPONSABILIDAD:
 # Manejo de memoria conversacional de NIA.
 #
-# Enfoque alineado con Don Andrés:
+# Enfoque alineado:
 # - Mantener contexto conversacional por sesión.
 # - Evitar que el cliente repita información.
 # - Acumular datos técnicos útiles antes de buscar.
 # - Limpiar contexto cuando el usuario cambia de producto/familia.
 # - Detectar códigos exactos aunque vengan dentro de frases.
 # - Recordar último producto seleccionado para continuidad comercial.
+# - Guardar la última pregunta activa de NIA.
+# - Guardar el slot pendiente que el usuario debe responder.
+# - Interpretar respuestas cortas según la pregunta anterior.
 # - No inventar datos: solo guarda señales claras del usuario.
 #
 # NOTA PRODUCTIVA:
@@ -33,6 +36,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from memory.slot_response_detector import detect_slot_response
+
 
 # ============================================================
 # STORAGE TEMPORAL EN MEMORIA
@@ -47,6 +52,14 @@ _SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 MAX_HISTORY_MESSAGES = 30
 SESSION_TTL_SECONDS = 691200  # 8 días
+
+
+# ============================================================
+# CAMPOS TÉCNICOS / COMERCIALES PERMITIDOS EN CONTEXTO
+# ============================================================
+# update_context() solo guarda claves presentes en esta lista.
+# Por eso aquí deben existir tanto campos técnicos como banderas
+# conversacionales útiles.
 
 TECHNICAL_CONTEXT_KEYS = [
     "familia",
@@ -82,6 +95,17 @@ TECHNICAL_CONTEXT_KEYS = [
     "autonomia",
     "conectividad",
     "lente",
+
+    # --------------------------------------------------------
+    # Flags conversacionales / respuestas negativas
+    # --------------------------------------------------------
+    "marca_descartada",
+    "brand_preference_status",
+    "referencia_descartada",
+    "reference_status",
+    "aplicacion_descartada",
+    "application_status",
+    "generic_need_status",
 ]
 
 
@@ -141,6 +165,7 @@ def extract_exact_product_code(message: str) -> Optional[str]:
     if not raw:
         return None
 
+    # Código VIA tipo P382280.
     match_p = re.search(
         r"\b(P[0-9]{4,}[A-Za-z0-9]*)\b",
         raw,
@@ -150,6 +175,9 @@ def extract_exact_product_code(message: str) -> Optional[str]:
     if match_p:
         return match_p.group(1).upper()
 
+    # Código numérico largo.
+    # Ejemplo: 300203.
+    # Mínimo 6 dígitos para evitar confundir valores técnicos.
     match_num = re.search(r"\b([0-9]{6,})\b", raw)
 
     if match_num:
@@ -189,6 +217,22 @@ def _build_empty_session() -> Dict[str, Any]:
         "last_selected_product": None,
         "last_selected_product_code": None,
         "estado_negociacion": None,
+
+        # ----------------------------------------------------
+        # Última pregunta activa / slot pendiente
+        # ----------------------------------------------------
+        # Esto permite que NIA entienda respuestas cortas.
+        #
+        # Ejemplo:
+        # NIA: ¿Qué tipo específico necesitas?
+        # last_assistant_question_field = "subtipo"
+        # Usuario: sensor fotoeléctrico
+        # NIA debe guardar subtipo = fotoelectrico
+        # ----------------------------------------------------
+        "last_assistant_question_field": None,
+        "last_assistant_question_text": None,
+        "last_assistant_question_at": None,
+        "slot_pendiente": None,
 
         # Flags de conversación
         "pending_questions": [],
@@ -295,6 +339,59 @@ def update_context(session: Dict[str, Any], new_context: Dict[str, Any]) -> Dict
     return session
 
 
+def get_context(session: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Obtiene contexto técnico actual.
+    """
+    return deepcopy(session.get("context", {}))
+
+
+# ============================================================
+# ÚLTIMA PREGUNTA / SLOT PENDIENTE
+# ============================================================
+
+def set_last_assistant_question(
+    session: Dict[str, Any],
+    field: Optional[str],
+    question: str,
+) -> Dict[str, Any]:
+    """
+    Guarda cuál fue la última pregunta que hizo NIA
+    y qué campo intentaba llenar.
+
+    Ejemplo:
+    - field = "subtipo"
+    - question = "¿Qué tipo específico necesitas?"
+    """
+    session["last_assistant_question_field"] = field
+    session["last_assistant_question_text"] = question
+    session["last_assistant_question_at"] = _now_iso()
+    session["slot_pendiente"] = field
+
+    return session
+
+
+def clear_last_assistant_question(session: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Limpia última pregunta activa.
+    Se usa cuando el usuario ya respondió el slot pendiente
+    o cuando NIA recomienda / completa la conversación.
+    """
+    session["last_assistant_question_field"] = None
+    session["last_assistant_question_text"] = None
+    session["last_assistant_question_at"] = None
+    session["slot_pendiente"] = None
+
+    return session
+
+
+def get_last_assistant_question_field(session: Dict[str, Any]) -> Optional[str]:
+    """
+    Devuelve el campo de la última pregunta activa.
+    """
+    return session.get("last_assistant_question_field") or session.get("slot_pendiente")
+
+
 def reset_technical_context(
     session: Dict[str, Any],
     preserve_history: bool = True,
@@ -314,6 +411,8 @@ def reset_technical_context(
     session["conversation_complete"] = False
     session["technical_questions_asked"] = 0
 
+    clear_last_assistant_question(session)
+
     if not preserve_selected_product:
         session["last_results"] = []
         session["last_selected_product"] = None
@@ -324,13 +423,6 @@ def reset_technical_context(
         session["history"] = []
 
     return session
-
-
-def get_context(session: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Obtiene contexto técnico actual.
-    """
-    return deepcopy(session.get("context", {}))
 
 
 # ============================================================
@@ -665,6 +757,33 @@ def extract_context_from_message(message: str) -> Dict[str, Any]:
         context["familia"] = "electrico"
 
     # --------------------------------------------------------
+    # Subtipos de sensores industriales
+    # --------------------------------------------------------
+    if any(w in msg for w in ["fotoelectrico", "foto electrico", "fotocelda", "foto celda"]):
+        context["familia"] = "sensor"
+        context["subtipo"] = "fotoelectrico"
+
+    if any(w in msg for w in ["inductivo", "proximidad inductiva", "proximidad inductivo"]):
+        context["familia"] = "sensor"
+        context["subtipo"] = "inductivo"
+
+    if any(w in msg for w in ["capacitivo", "proximidad capacitiva", "proximidad capacitivo"]):
+        context["familia"] = "sensor"
+        context["subtipo"] = "capacitivo"
+
+    if any(w in msg for w in ["reflectivo", "retroreflectivo", "retro reflectivo"]):
+        context["familia"] = "sensor"
+        context["subtipo"] = "reflectivo"
+
+    if any(w in msg for w in ["barrera", "emisor receptor", "emisor y receptor"]):
+        context["familia"] = "sensor"
+        context["subtipo"] = "barrera"
+
+    if any(w in msg for w in ["difuso", "difusa"]):
+        context["familia"] = "sensor"
+        context["subtipo"] = "difuso"
+
+    # --------------------------------------------------------
     # Subtipo / aplicación técnica
     # --------------------------------------------------------
     if "presion" in msg or "presión" in msg:
@@ -712,14 +831,16 @@ def extract_context_from_message(message: str) -> Dict[str, Any]:
     # --------------------------------------------------------
     # Voltaje
     # --------------------------------------------------------
-    if re.search(r"\b\d+(\.\d+)?\s*(v|vac|vca|vdc|vcc)\b", msg):
-        context["voltaje"] = original.strip()
+    voltaje_match = re.search(r"\b\d+(\.\d+)?\s*(v|vac|vca|vdc|vcc)\b", msg)
+    if voltaje_match:
+        context["voltaje"] = voltaje_match.group(0)
 
     # --------------------------------------------------------
     # Potencia
     # --------------------------------------------------------
-    if re.search(r"\b\d+(\.\d+)?\s*(hp|kw|kva|va)\b", msg):
-        context["potencia"] = original.strip()
+    potencia_match = re.search(r"\b\d+(\.\d+)?\s*(hp|kw|kva|va)\b", msg)
+    if potencia_match:
+        context["potencia"] = potencia_match.group(0)
 
     # --------------------------------------------------------
     # RPM
@@ -806,6 +927,7 @@ def process_memory_update(
     """
     Pipeline básico de memoria:
     - guarda mensaje
+    - revisa si responde a un slot pendiente
     - extrae contexto
     - limpia contexto si cambia la familia
     - limpia contexto si llega un código exacto nuevo
@@ -816,7 +938,39 @@ def process_memory_update(
     if detected_intent:
         set_intent(session, detected_intent)
 
+    current_context = session.get("context", {})
+
+    # --------------------------------------------------------
+    # Primero intentamos interpretar el mensaje como respuesta
+    # a la última pregunta activa de NIA.
+    #
+    # Ejemplo:
+    # - NIA preguntó: ¿Qué tipo específico necesitas?
+    # - slot_pendiente: subtipo
+    # - Usuario: sensor fotoeléctrico
+    # - Resultado: subtipo = fotoelectrico
+    # --------------------------------------------------------
+    pending_slot = get_last_assistant_question_field(session)
+
+    slot_detection = detect_slot_response(
+        message=user_message,
+        pending_slot=pending_slot,
+        previous_context=current_context,
+    )
+
     extracted = extract_context_from_message(user_message)
+
+    if slot_detection.get("matched"):
+        slot_context = slot_detection.get("context", {})
+
+        # La respuesta al slot tiene prioridad sobre extracción general.
+        extracted = {
+            **extracted,
+            **slot_context,
+        }
+
+        if slot_detection.get("clear_pending_slot"):
+            clear_last_assistant_question(session)
 
     current_context = session.get("context", {})
     current_family = current_context.get("familia")

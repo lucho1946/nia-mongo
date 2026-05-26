@@ -137,7 +137,7 @@ def main() -> None:
     # Caso 4: consulta natural de variador
     # --------------------------------------------------------
     variador_request = ChatRequest(
-        mensaje="me regalas el precio del variador 3hp 220v",
+        mensaje="cual es el precio del variador 3hp 220v",
         session_id=None,
         canal="web",
         cliente_id="test_variador_limpio",
@@ -298,6 +298,89 @@ def main() -> None:
         "cotización" in flujo_5.respuesta.lower()
         or "cotizacion" in flujo_5.respuesta.lower(),
         "La respuesta debe hablar de cotización.",
+    )
+    
+    # ============================================================
+    # CASO 8 - Contexto activo: sensor fotoeléctrico
+    # ============================================================
+    # Objetivo:
+    # Validar que NIA recuerde la última pregunta hecha.
+    #
+    # Flujo esperado:
+    # Usuario: necesito un sensor industrial
+    # NIA: pregunta subtipo
+    # Usuario: sensor fotoelectrico
+    # NIA: NO debe repetir "¿Qué tipo específico necesitas?"
+    # ============================================================
+
+    sensor_1 = process_chat_request(
+        ChatRequest(
+            mensaje="necesito un sensor industrial",
+            canal="web",
+            cliente_id="test_sensor_fotoelectrico",
+        )
+    )
+
+    sensor_2 = process_chat_request(
+        ChatRequest(
+            mensaje="sensor fotoelectrico",
+            session_id=sensor_1.session_id,
+            canal="web",
+            cliente_id="test_sensor_fotoelectrico",
+        )
+    )
+
+    print_response("CASO 8 - Sensor fotoeléctrico responde subtipo pendiente", sensor_2)
+
+    assert_condition(
+        "¿Qué tipo específico necesitas?" not in sensor_2.respuesta,
+        "NIA no debe repetir la pregunta de subtipo cuando el usuario responde sensor fotoelectrico.",
+    )
+
+    assert_condition(
+    len(sensor_2.productos) >= 1,
+    "NIA debe devolver productos o avanzar correctamente cuando el usuario responde sensor fotoelectrico.",
+)
+
+    assert_condition(
+        any(
+            "foto" in producto.nombre.lower()
+        or "foto" in producto.descripcion.lower()
+        or "foto" in producto.referencia.lower()
+        for producto in sensor_2.productos
+    ),
+    "NIA debe devolver productos relacionados con sensor fotoelectrico.",
+)
+
+    # ============================================================
+    # CASO 9 - Solicitud genérica no pregunta marca primero
+    # ============================================================
+    # Objetivo:
+    # Validar que si el usuario solo dice "necesito un producto",
+    # NIA pregunte qué producto busca o para qué aplicación,
+    # en vez de preguntar marca.
+    # ============================================================
+
+    generico_1 = process_chat_request(
+        ChatRequest(
+            mensaje="necesito un producto",
+            canal="web",
+            cliente_id="test_producto_generico",
+        )
+    )
+
+    print_response("CASO 9 - Producto genérico pregunta producto/aplicación", generico_1)
+
+    assert_condition(
+        "marca" not in generico_1.respuesta.lower(),
+        "NIA no debe preguntar marca primero cuando el usuario solo dice necesito un producto.",
+    )
+
+    assert_condition(
+        "producto" in generico_1.respuesta.lower()
+        or "aplicación" in generico_1.respuesta.lower()
+        or "aplicacion" in generico_1.respuesta.lower(),
+        "NIA debe preguntar qué producto busca o para qué aplicación lo necesita.",
     )
 
     print("\nFIN TEST CHAT RESPONSE ADAPTER ✅")

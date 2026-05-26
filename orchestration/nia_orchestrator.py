@@ -60,6 +60,10 @@ from memory.conversation_memory import (
     reset_technical_context,
     get_technical_questions_asked,
     extract_exact_product_code,
+    
+    # Contexto activo/Ultima preguna
+    set_last_assistant_question,
+    clear_last_assistant_question,
 )
 
 from knowledge.catalog_knowledge import (
@@ -85,25 +89,21 @@ from orchestration.commercial_continuity import (
 
 
 # ============================================================
-# SESIÓN DEFAULT PARA PRUEBAS LOCALES
+# SESIONES
 # ============================================================
-
-DEFAULT_SESSION_ID: Optional[str] = None
-
 
 def _ensure_session() -> str:
     """
-    Garantiza una sesión activa para pruebas locales.
-    En producción, el session_id debe venir del frontend, WhatsApp,
-    API externa o canal comercial.
+    Crea una sesión nueva cuando el request no trae session_id.
+
+    Decisión técnica:
+    - Si un canal quiere mantener continuidad, debe enviar el session_id
+      devuelto por NIA en la respuesta anterior.
+    - Si no envía session_id, se interpreta como conversación nueva.
+    - Esto evita contaminación de contexto entre usuarios o pruebas.
     """
-    global DEFAULT_SESSION_ID
-
-    if DEFAULT_SESSION_ID is None:
-        session = create_session()
-        DEFAULT_SESSION_ID = session["session_id"]
-
-    return DEFAULT_SESSION_ID
+    session = create_session()
+    return session["session_id"]
 
 
 # ============================================================
@@ -558,6 +558,54 @@ SUBTYPE_COMPATIBILITY_TERMS: Dict[str, List[str]] = {
     "caudal": [
         "caudal",
         "flujo",
+    ],
+        "fotoelectrico": [
+        "fotoelectrico",
+        "foto electrico",
+        "fotocelda",
+        "foto celda",
+        "photoelectric",
+        "photo electric",
+        "sensor fotoelectrico",
+        "sensor foto electrico",
+        "reflectivo",
+        "retroreflectivo",
+        "barrera",
+        "difuso",
+    ],
+    "inductivo": [
+        "inductivo",
+        "sensor inductivo",
+        "proximidad inductiva",
+        "proximidad inductivo",
+    ],
+    "capacitivo": [
+        "capacitivo",
+        "sensor capacitivo",
+        "proximidad capacitiva",
+        "proximidad capacitivo",
+    ],
+    "reflectivo": [
+        "reflectivo",
+        "retroreflectivo",
+        "retro reflectivo",
+        "reflex",
+        "reflector",
+        "fotoelectrico",
+    ],
+    "barrera": [
+        "barrera",
+        "tipo barrera",
+        "emisor receptor",
+        "emisor y receptor",
+        "fotoelectrico",
+    ],
+    "difuso": [
+        "difuso",
+        "difusa",
+        "deteccion difusa",
+        "detección difusa",
+        "fotoelectrico",
     ],
     "torquimetro": [
         "torquimetro",
@@ -1513,6 +1561,10 @@ def process_message(
     if commercial_continuity_response:
         session["estado_negociacion"] = "cotizacion_en_proceso"
 
+        # Esta respuesta ya no es una pregunta técnica pendiente.
+        # Evitamos que una pregunta anterior contamine el flujo comercial.
+        clear_last_assistant_question(session)
+
         append_assistant_message(
             session,
             commercial_continuity_response.get("response", ""),
@@ -1579,9 +1631,9 @@ def process_message(
         if code_results:
             save_last_results(session, code_results)
             reset_technical_questions(session)
+            clear_last_assistant_question(session)
 
         append_assistant_message(session, final_response.get("response", ""))
-        save_session(session)
 
         final_response["session_id"] = session_id
         final_response["context"] = session.get("context", {})
@@ -1646,6 +1698,14 @@ def process_message(
     ):
         response = "¿Qué medida, tamaño o capacidad necesitas? Por ejemplo: 200 Nm, 100 Nm o 50 Nm."
 
+        # Guardamos el slot pendiente para que si el usuario responde:
+        # "200nm", NIA entienda que está respondiendo la medida.
+        set_last_assistant_question(
+            session=session,
+            field="medida",
+            question=response,
+        )
+
         increment_technical_questions(session)
         append_assistant_message(session, response)
         save_session(session)
@@ -1675,6 +1735,7 @@ def process_message(
     ):
         save_last_results(session, compatible_results)
         reset_technical_questions(session)
+        clear_last_assistant_question(session)
 
         payload = _build_payload_from_results(detected_intent, compatible_results)
 
@@ -1773,6 +1834,14 @@ def process_message(
                 "¿Me puedes confirmar una referencia, marca o especificación clave?",
             )
 
+            # Guardamos qué campo estaba preguntando NIA.
+            # Ejemplo: field="subtipo" para "¿Qué tipo específico necesitas?"
+            set_last_assistant_question(
+                session=session,
+                field=question_data.get("field"),
+                question=response,
+            )
+
             increment_technical_questions(session)
             append_assistant_message(session, response)
             save_session(session)
@@ -1845,6 +1914,13 @@ def process_message(
             "¿Me puedes dar más información del producto que necesitas?",
         )
 
+        # Guardamos el slot pendiente para interpretar la próxima respuesta.
+        set_last_assistant_question(
+            session=session,
+            field=question_data.get("field"),
+            question=response,
+        )
+
         increment_technical_questions(session)
         append_assistant_message(session, response)
         save_session(session)
@@ -1899,6 +1975,7 @@ def process_message(
 
     save_last_results(session, search_results)
     reset_technical_questions(session)
+    clear_last_assistant_question(session)
 
     payload = _build_payload_from_results(detected_intent, search_results)
 

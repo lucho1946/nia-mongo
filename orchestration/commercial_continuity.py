@@ -10,14 +10,14 @@
 # - NIA debe continuar con ese producto.
 # - NIA NO debe buscar productos nuevos con la frase "cotización".
 #
-# Este módulo NO busca en MongoDB.
 # Este módulo NO llama OpenAI.
 # Este módulo NO inventa productos.
 #
-# Importante:
-# Para conservar precio, disponibilidad, referencia y campos limpios,
-# este módulo usa services.search.formatear_producto(), igual que
-# core/response_engine.py.
+# Mejora actual:
+# - Si no existe last_selected_product, intenta recuperar producto
+#   desde context.codigo_producto / context.referencia.
+# - Esto protege flujos donde el cliente corrige código o pide
+#   cotización después de haber mencionado un código exacto.
 # ============================================================
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ import unicodedata
 from typing import Any, Dict, Optional
 
 from memory.conversation_memory import get_last_selected_product
+from retrieval.search_adapter import search_exact_code
 from services.search import formatear_producto
 
 
@@ -120,9 +121,6 @@ def is_commercial_continuation_message(message: str) -> bool:
     if any(_normalize(phrase) in text for phrase in COMMERCIAL_CONTINUITY_PHRASES):
         return True
 
-    # Caso flexible:
-    # "cotización", "cotizacion", "enviar cotización"
-    # sin producto nuevo explícito.
     if "cotizacion" in text and not any(
         token in text
         for token in [
@@ -140,7 +138,6 @@ def is_commercial_continuation_message(message: str) -> bool:
     ):
         return True
 
-    # Respuestas cortas de continuación luego de una recomendación.
     if text in {"si", "sí", "ok", "listo", "dale", "correcto", "ese", "ese mismo"}:
         return True
 
@@ -148,20 +145,12 @@ def is_commercial_continuation_message(message: str) -> bool:
 
 
 # ============================================================
-# FORMATO DE PRODUCTO
+# RECUPERACIÓN DE PRODUCTO ACTIVO
 # ============================================================
 
 def _format_selected_product(product: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Normaliza el producto seleccionado usando el formateador oficial
-    de productos.
-
-    Esto evita perder:
-    - precio
-    - disponibilidad
-    - tiempo de entrega
-    - referencia
-    - características
+    Normaliza el producto seleccionado usando el formateador oficial.
     """
     if not isinstance(product, dict):
         return {}
@@ -177,6 +166,78 @@ def _format_selected_product(product: Dict[str, Any]) -> Dict[str, Any]:
 
     return product
 
+
+def _extract_code_from_context(session: Dict[str, Any]) -> Optional[str]:
+    """
+    Intenta obtener código desde el contexto actual de la sesión.
+    """
+    context = session.get("context", {})
+
+    if not isinstance(context, dict):
+        return None
+
+    code = (
+        context.get("codigo_producto")
+        or context.get("referencia")
+        or session.get("last_selected_product_code")
+    )
+
+    code = _safe_str(code)
+
+    return code or None
+
+
+def _recover_product_from_context_code(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Recupera producto desde código exacto guardado en contexto.
+
+    Esto es un fallback de seguridad para continuidad comercial.
+    """
+    code = _extract_code_from_context(session)
+
+    if not code:
+        return None
+
+    try:
+        results = search_exact_code(code)
+    except Exception:
+        return None
+
+    if not results:
+        return None
+
+    first = results[0]
+
+    if not isinstance(first, dict):
+        return None
+
+    return first
+
+
+def _get_active_product_for_continuity(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Obtiene producto activo para continuidad comercial.
+
+    Orden:
+    1. last_selected_product
+    2. código en contexto / referencia / last_selected_product_code
+    """
+    selected_product = get_last_selected_product(session)
+
+    if selected_product:
+        return selected_product
+
+    recovered = _recover_product_from_context_code(session)
+
+    if recovered:
+        return recovered
+
+    return None
+
+
+# ============================================================
+# CAMPOS DE PRODUCTO
+# ============================================================
 
 def _product_code(product: Dict[str, Any]) -> str:
     return _safe_str(product.get("codigo") or product.get("CODIGO"))
@@ -237,7 +298,7 @@ def build_commercial_continuity_response(
     if not is_commercial_continuation_message(message):
         return None
 
-    selected_product = get_last_selected_product(session)
+    selected_product = _get_active_product_for_continuity(session)
 
     if not selected_product:
         return None
