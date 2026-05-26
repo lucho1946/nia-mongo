@@ -382,6 +382,116 @@ def main() -> None:
         or "aplicacion" in generico_1.respuesta.lower(),
         "NIA debe preguntar qué producto busca o para qué aplicación lo necesita.",
     )
+    
+        # ============================================================
+    # CASO 10 - Cotización con código explícito desde lista
+    # ============================================================
+    # Objetivo:
+    # Si NIA muestra varias opciones y el usuario elige una card
+    # con código explícito, ese código debe mandar sobre el primer
+    # producto recomendado.
+    #
+    # Bug corregido:
+    # Antes el usuario elegía P256146, pero NIA cotizaba P101722.
+    # ============================================================
+
+    sensor_lista = process_chat_request(
+        ChatRequest(
+            mensaje="necesito un sensor fotoelectrico",
+            canal="web",
+            cliente_id="test_cotiza_sensor_codigo_explicito",
+        )
+    )
+
+    sensor_cotizacion = process_chat_request(
+        ChatRequest(
+            mensaje=(
+                "Quiero cotizar: Sensor fotoelectrico emisor receptor "
+                "1 Metro 12-24vdc pnp (Código: P256146)"
+            ),
+            session_id=sensor_lista.session_id,
+            canal="web",
+            cliente_id="test_cotiza_sensor_codigo_explicito",
+        )
+    )
+
+    print_response(
+        "CASO 10 - Cotización usa código explícito P256146",
+        sensor_cotizacion,
+    )
+
+    assert_condition(
+        "P256146" in sensor_cotizacion.respuesta,
+        "NIA debe cotizar el código explícito P256146.",
+    )
+
+    assert_condition(
+        len(sensor_cotizacion.productos) >= 1,
+        "NIA debe devolver el producto seleccionado para cotización.",
+    )
+
+    assert_condition(
+        sensor_cotizacion.productos[0].codigo == "P256146",
+        "El primer producto de la cotización debe ser P256146, no el primer resultado anterior.",
+    )
+
+    # ============================================================
+    # CASO 11 - Código exacto conserva producto activo para cotización
+    # ============================================================
+    # Objetivo:
+    # Si el usuario busca un código exacto y luego dice:
+    # "quiero cotizar este producto", NIA debe usar ese producto.
+    #
+    # Bug corregido:
+    # Antes NIA respondía: ¿Qué producto buscas?
+    # porque la rama de código exacto no persistía la sesión.
+    # ============================================================
+
+    exacto_1 = process_chat_request(
+        ChatRequest(
+            mensaje="hola",
+            canal="web",
+            cliente_id="test_cotiza_300203",
+        )
+    )
+
+    exacto_2 = process_chat_request(
+        ChatRequest(
+            mensaje="busco el producto 300203",
+            session_id=exacto_1.session_id,
+            canal="web",
+            cliente_id="test_cotiza_300203",
+        )
+    )
+
+    exacto_3 = process_chat_request(
+        ChatRequest(
+            mensaje="quiero cotizar este producto",
+            session_id=exacto_2.session_id,
+            canal="web",
+            cliente_id="test_cotiza_300203",
+        )
+    )
+
+    print_response(
+        "CASO 11 - Código exacto conserva producto activo para cotización",
+        exacto_3,
+    )
+
+    assert_condition(
+        "300203" in exacto_3.respuesta,
+        "NIA debe continuar la cotización con el producto 300203.",
+    )
+
+    assert_condition(
+        len(exacto_3.productos) >= 1,
+        "NIA debe devolver el producto activo 300203 en la cotización.",
+    )
+
+    assert_condition(
+        exacto_3.productos[0].codigo == "300203",
+        "El producto activo de la cotización debe ser 300203.",
+    )
 
     print("\nFIN TEST CHAT RESPONSE ADAPTER ✅")
 

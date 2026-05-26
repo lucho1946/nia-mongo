@@ -4,20 +4,30 @@
 # RESPONSABILIDAD:
 # Detectar continuidad comercial.
 #
-# Caso que resuelve:
+# Casos que resuelve:
 # - Usuario ya seleccionó un producto.
 # - Luego dice: "Envíame una cotización".
 # - NIA debe continuar con ese producto.
 # - NIA NO debe buscar productos nuevos con la frase "cotización".
 #
+# Mejora clave:
+# - Si el usuario escribe un código explícito dentro del mensaje
+#   de cotización, ese código manda sobre el producto activo.
+#
+# Ejemplo:
+# - NIA muestra lista:
+#   1. P101722
+#   2. P256146
+# - Usuario:
+#   "Quiero cotizar: ... (Código: P256146)"
+# - NIA debe cotizar P256146, NO P101722.
+#
 # Este módulo NO llama OpenAI.
 # Este módulo NO inventa productos.
-#
-# Mejora actual:
-# - Si no existe last_selected_product, intenta recuperar producto
-#   desde context.codigo_producto / context.referencia.
-# - Esto protege flujos donde el cliente corrige código o pide
-#   cotización después de haber mencionado un código exacto.
+# Este módulo solo:
+# - detecta continuidad comercial
+# - recupera producto real desde memoria o código exacto
+# - construye una respuesta de cotización segura
 # ============================================================
 
 from __future__ import annotations
@@ -26,7 +36,10 @@ import re
 import unicodedata
 from typing import Any, Dict, Optional
 
-from memory.conversation_memory import get_last_selected_product
+from memory.conversation_memory import (
+    get_last_selected_product,
+    extract_exact_product_code,
+)
 from retrieval.search_adapter import search_exact_code
 from services.search import formatear_producto
 
@@ -73,16 +86,41 @@ def _safe_str(value: Any, default: str = "") -> str:
 # ============================================================
 
 COMMERCIAL_CONTINUITY_PHRASES = [
+    # Cotización directa
     "enviame una cotizacion",
+    "enviame la cotizacion",
     "enviame cotizacion",
     "enviar cotizacion",
     "envia cotizacion",
     "envíame una cotización",
+    "envíame la cotización",
     "envíame cotización",
+    "mandame la cotizacion",
+    "mándame la cotización",
+    "mandame cotizacion",
+    "mándame cotización",
+    "me envias la cotizacion",
+    "me envías la cotización",
+    "me puedes enviar la cotizacion",
+    "me puedes enviar la cotización",
+
+    # Cotizar producto actual
     "quiero cotizar",
     "quiero cotizarlo",
     "quiero cotizar este producto",
+    "quiero cotizar ese producto",
     "cotizar este producto",
+    "cotizar ese producto",
+    "cotizame este producto",
+    "cotízame este producto",
+    "cotizame ese producto",
+    "cotízame ese producto",
+    "me puedes cotizar este producto",
+    "me puedes cotizar ese producto",
+    "me cotizas este producto",
+    "me cotizas ese producto",
+
+    # Botón / intención comercial
     "solicitar cotizacion",
     "solicitar cotización",
     "generar cotizacion",
@@ -91,17 +129,24 @@ COMMERCIAL_CONTINUITY_PHRASES = [
     "hazme la cotización",
     "me haces la cotizacion",
     "me haces la cotización",
+
+    # Compra / cierre
     "quiero comprarlo",
     "quiero comprar",
     "me interesa",
     "lo quiero",
     "procedamos",
     "dale",
+
+    # Referencias al producto activo
     "si ese",
     "sí ese",
     "ese producto",
+    "este producto",
     "ese mismo",
+    "este mismo",
     "con ese",
+    "con este",
 ]
 
 
@@ -111,7 +156,7 @@ def is_commercial_continuation_message(message: str) -> bool:
 
     Importante:
     No significa buscar productos.
-    Significa continuar con el último producto seleccionado.
+    Significa continuar con producto activo o con código explícito.
     """
     text = _normalize(message)
 
@@ -121,36 +166,44 @@ def is_commercial_continuation_message(message: str) -> bool:
     if any(_normalize(phrase) in text for phrase in COMMERCIAL_CONTINUITY_PHRASES):
         return True
 
-    if "cotizacion" in text and not any(
-        token in text
-        for token in [
-            "sensor",
-            "motor",
-            "variador",
-            "plc",
-            "valvula",
-            "torquimetro",
-            "producto ",
-            "codigo",
-            "referencia",
-            "marca",
-        ]
-    ):
+    # Caso flexible:
+    # "cotización", "cotizacion", "enviar cotización"
+    # sin una solicitud nueva de producto.
+    if "cotizacion" in text:
         return True
 
-    if text in {"si", "sí", "ok", "listo", "dale", "correcto", "ese", "ese mismo"}:
+    # Respuestas cortas de continuación luego de una recomendación.
+    if text in {
+        "si",
+        "sí",
+        "ok",
+        "listo",
+        "dale",
+        "correcto",
+        "ese",
+        "este",
+        "ese mismo",
+        "este mismo",
+    }:
         return True
 
     return False
 
 
 # ============================================================
-# RECUPERACIÓN DE PRODUCTO ACTIVO
+# RECUPERACIÓN DE PRODUCTO
 # ============================================================
 
 def _format_selected_product(product: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normaliza el producto seleccionado usando el formateador oficial.
+
+    Esto conserva:
+    - precio
+    - disponibilidad
+    - tiempo de entrega
+    - referencia
+    - características
     """
     if not isinstance(product, dict):
         return {}
@@ -167,33 +220,45 @@ def _format_selected_product(product: Dict[str, Any]) -> Dict[str, Any]:
     return product
 
 
-def _extract_code_from_context(session: Dict[str, Any]) -> Optional[str]:
+def _extract_code_from_message(message: str) -> Optional[str]:
     """
-    Intenta obtener código desde el contexto actual de la sesión.
+    Extrae un código explícito desde el mensaje del usuario.
+
+    Ejemplos:
+    - Código: P256146
+    - codigo 300203
+    - quiero cotizar P256146
+    - producto 300203
     """
-    context = session.get("context", {})
+    code = extract_exact_product_code(message)
 
-    if not isinstance(context, dict):
-        return None
+    if code:
+        return _safe_str(code)
 
-    code = (
-        context.get("codigo_producto")
-        or context.get("referencia")
-        or session.get("last_selected_product_code")
+    # Fallback adicional para formatos tipo:
+    # "(Código: P256146)" o "codigo:P256146"
+    raw = str(message or "")
+
+    match = re.search(
+        r"(?:codigo|código|cod|cód)\s*[:#-]?\s*([Pp]?\d{5,}[A-Za-z0-9]*)",
+        raw,
+        flags=re.IGNORECASE,
     )
 
+    if match:
+        code = match.group(1).strip()
+
+        if code:
+            return code.upper() if code.lower().startswith("p") else code
+
+    return None
+
+
+def _search_product_by_code(code: str) -> Optional[Dict[str, Any]]:
+    """
+    Busca un producto real por código exacto.
+    """
     code = _safe_str(code)
-
-    return code or None
-
-
-def _recover_product_from_context_code(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Recupera producto desde código exacto guardado en contexto.
-
-    Esto es un fallback de seguridad para continuidad comercial.
-    """
-    code = _extract_code_from_context(session)
 
     if not code:
         return None
@@ -214,14 +279,59 @@ def _recover_product_from_context_code(session: Dict[str, Any]) -> Optional[Dict
     return first
 
 
-def _get_active_product_for_continuity(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _extract_code_from_context(session: Dict[str, Any]) -> Optional[str]:
+    """
+    Intenta obtener código desde contexto/memoria.
+    """
+    context = session.get("context", {})
+
+    if not isinstance(context, dict):
+        context = {}
+
+    code = (
+        context.get("codigo_producto")
+        or context.get("referencia")
+        or session.get("last_selected_product_code")
+    )
+
+    code = _safe_str(code)
+
+    return code or None
+
+
+def _recover_product_from_context_code(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Recupera producto desde código guardado en contexto.
+    """
+    code = _extract_code_from_context(session)
+
+    if not code:
+        return None
+
+    return _search_product_by_code(code)
+
+
+def _get_active_product_for_continuity(
+    session: Dict[str, Any],
+    message: str,
+) -> Optional[Dict[str, Any]]:
     """
     Obtiene producto activo para continuidad comercial.
 
-    Orden:
-    1. last_selected_product
-    2. código en contexto / referencia / last_selected_product_code
+    Orden correcto:
+    1. Código explícito en el mensaje del usuario.
+       Este tiene máxima prioridad.
+    2. last_selected_product.
+    3. código en contexto / referencia / last_selected_product_code.
     """
+    explicit_code = _extract_code_from_message(message)
+
+    if explicit_code:
+        product_from_message = _search_product_by_code(explicit_code)
+
+        if product_from_message:
+            return product_from_message
+
     selected_product = get_last_selected_product(session)
 
     if selected_product:
@@ -298,7 +408,10 @@ def build_commercial_continuity_response(
     if not is_commercial_continuation_message(message):
         return None
 
-    selected_product = _get_active_product_for_continuity(session)
+    selected_product = _get_active_product_for_continuity(
+        session=session,
+        message=message,
+    )
 
     if not selected_product:
         return None

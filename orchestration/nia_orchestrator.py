@@ -1629,11 +1629,22 @@ def process_message(
         )
 
         if code_results:
+            # Guarda el resultado como último producto seleccionado.
+            # Esto es clave para que luego frases como:
+            # "quiero cotizar este producto"
+            # "enviame la cotizacion"
+            # puedan usar el producto activo.
             save_last_results(session, code_results)
             reset_technical_questions(session)
             clear_last_assistant_question(session)
 
         append_assistant_message(session, final_response.get("response", ""))
+
+        # IMPORTANTE:
+        # Antes faltaba persistir la sesión en esta rama.
+        # Sin esto, NIA respondía el producto exacto, pero no guardaba
+        # last_selected_product para el siguiente mensaje.
+        save_session(session)
 
         final_response["session_id"] = session_id
         final_response["context"] = session.get("context", {})
