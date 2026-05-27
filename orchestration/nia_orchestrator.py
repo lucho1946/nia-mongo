@@ -85,6 +85,7 @@ from knowledge.document_policy import (
 
 from orchestration.commercial_continuity import (
     build_commercial_continuity_response,
+    build_commercial_data_capture_response,
 )
 
 
@@ -1540,6 +1541,44 @@ def process_message(
             nia_os_context,
         )
     
+    # --------------------------------------------------------
+    # 3.2.1 Captura de datos comerciales estructurados
+    # --------------------------------------------------------
+    # Si NIA ya inició una cotización y el cliente responde con:
+    # - nombre
+    # - empresa
+    # - correo
+    # - teléfono
+    # - cantidad
+    # - presupuesto
+    # - fecha estimada
+    #
+    # NIA debe guardar esos datos y pedir solo lo faltante.
+    # Esto ejecuta la instrucción del Motor Comercial:
+    # "Solicitar únicamente los datos faltantes".
+    # --------------------------------------------------------
+    commercial_data_response = build_commercial_data_capture_response(
+        session=session,
+        message=message,
+        detected_intent=detected_intent,
+    )
+
+    if commercial_data_response:
+        clear_last_assistant_question(session)
+
+        append_assistant_message(
+            session,
+            commercial_data_response.get("response", ""),
+        )
+
+        save_session(session)
+
+        return _attach_nia_os_metadata(
+            commercial_data_response,
+            nia_os_context,
+        )
+        
+        
     # --------------------------------------------------------
     # 3.3. Continuidad comercial con último producto seleccionado
     # --------------------------------------------------------

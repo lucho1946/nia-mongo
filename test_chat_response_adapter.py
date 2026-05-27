@@ -492,6 +492,123 @@ def main() -> None:
         exacto_3.productos[0].codigo == "300203",
         "El producto activo de la cotización debe ser 300203.",
     )
+    
+        # ============================================================
+    # CASO 12 - Captura datos comerciales parciales
+    # ============================================================
+    # Objetivo:
+    # Después de iniciar cotización, si el usuario entrega nombre,
+    # empresa y correo, NIA debe guardar esos datos y NO volver
+    # a pedirlos. Si falta contacto alterno no es obligatorio,
+    # porque correo o teléfono son medio de contacto válido.
+    # ============================================================
+
+    cotizacion_base = process_chat_request(
+        ChatRequest(
+            mensaje="busco el producto 300203",
+            canal="web",
+            cliente_id="test_datos_comerciales",
+        )
+    )
+
+    cotizacion_inicio = process_chat_request(
+        ChatRequest(
+            mensaje="quiero cotizar este producto",
+            session_id=cotizacion_base.session_id,
+            canal="web",
+            cliente_id="test_datos_comerciales",
+        )
+    )
+
+    datos_cliente = process_chat_request(
+        ChatRequest(
+            mensaje="Soy Carlos de Industrias ABC, mi correo es carlos@abc.com",
+            session_id=cotizacion_inicio.session_id,
+            canal="web",
+            cliente_id="test_datos_comerciales",
+        )
+    )
+
+    print_response(
+        "CASO 12 - Captura datos comerciales para cotización",
+        datos_cliente,
+    )
+
+    assert_condition(
+        "Carlos" in datos_cliente.respuesta,
+        "NIA debe reconocer el nombre del cliente cuando viene en el mensaje.",
+    )
+
+    assert_condition(
+        "correo" in datos_cliente.respuesta.lower(),
+        "NIA debe confirmar que recibió el correo o los datos comerciales.",
+    )
+
+    assert_condition(
+        len(datos_cliente.productos) >= 1,
+        "NIA debe conservar el producto seleccionado durante la captura comercial.",
+    )
+
+    assert_condition(
+        datos_cliente.productos[0].codigo == "300203",
+        "NIA debe mantener el producto activo 300203 durante la captura de datos.",
+    )
+
+    # ============================================================
+    # CASO 13 - Datos comerciales incompletos
+    # ============================================================
+    # Objetivo:
+    # Si el usuario solo entrega nombre, NIA debe pedir empresa
+    # y correo o teléfono, no volver a pedir nombre.
+    # ============================================================
+
+    cotizacion_base_2 = process_chat_request(
+        ChatRequest(
+            mensaje="busco el producto 300203",
+            canal="web",
+            cliente_id="test_datos_incompletos",
+        )
+    )
+
+    cotizacion_inicio_2 = process_chat_request(
+        ChatRequest(
+            mensaje="quiero cotizar este producto",
+            session_id=cotizacion_base_2.session_id,
+            canal="web",
+            cliente_id="test_datos_incompletos",
+        )
+    )
+
+    datos_incompletos = process_chat_request(
+        ChatRequest(
+            mensaje="Me llamo Andrea",
+            session_id=cotizacion_inicio_2.session_id,
+            canal="web",
+            cliente_id="test_datos_incompletos",
+        )
+    )
+
+    print_response(
+        "CASO 13 - Pide solo datos comerciales faltantes",
+        datos_incompletos,
+    )
+
+    assert_condition(
+        "Andrea" in datos_incompletos.respuesta,
+        "NIA debe reconocer el nombre Andrea.",
+    )
+
+    assert_condition(
+        "empresa" in datos_incompletos.respuesta.lower(),
+        "NIA debe pedir empresa si no fue entregada.",
+    )
+
+    assert_condition(
+        "correo" in datos_incompletos.respuesta.lower()
+        or "teléfono" in datos_incompletos.respuesta.lower()
+        or "telefono" in datos_incompletos.respuesta.lower(),
+        "NIA debe pedir correo o teléfono si no hay medio de contacto.",
+    )
 
     print("\nFIN TEST CHAT RESPONSE ADAPTER ✅")
 
