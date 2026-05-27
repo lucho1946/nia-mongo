@@ -1,0 +1,430 @@
+{
+  "process_id": "process_commercial_spine_v1",
+  "name": "Columna vertebral comercial de NIA",
+  "version": "1.0.0",
+  "purpose": "Coordinar los módulos comerciales existentes de NIA OS para que la conversación avance de forma ordenada desde el mensaje del cliente hasta búsqueda, cotización, proforma, objeción o seguimiento.",
+  "important_note": "Este archivo no reemplaza module_motor_comercial, module_estado_negociacion, module_memoria_contextual, module_motor_cotizacion_precio ni module_motor_cierre_proforma. Los ordena y define el flujo maestro.",
+  "existing_modules_used": [
+    "module_motor_comercial",
+    "module_estado_negociacion",
+    "module_memoria_contextual",
+    "module_motor_api_productos",
+    "module_motor_tecnico_producto",
+    "module_motor_cotizacion_precio",
+    "module_motor_cierre_proforma",
+    "module_guardrails_no_inventar",
+    "module_hibrido_humano_ia",
+    "module_observabilidad"
+  ],
+  "golden_rules": [
+    "Leer contexto antes de responder.",
+    "Clasificar intención antes de decidir el siguiente paso.",
+    "No pedir datos que ya existan en memoria.",
+    "Hacer máximo una pregunta estratégica por turno.",
+    "No avanzar a cotización si la necesidad no está clara.",
+    "Si el cliente quiere comprar, avanzar a proforma sin volver a vender desde cero.",
+    "Si el cliente objeta o dice que no cumple, rediagnosticar antes de insistir.",
+    "No inventar producto, precio, stock, flete, descuento, disponibilidad ni tiempo de entrega.",
+    "Toda respuesta debe dejar un siguiente paso comercial claro."
+  ],
+  "master_flow": [
+    {
+      "step": 1,
+      "state": "cliente_escribe",
+      "description": "El cliente envía un mensaje nuevo o continúa una conversación.",
+      "next_state": "leer_contexto"
+    },
+    {
+      "step": 2,
+      "state": "leer_contexto",
+      "description": "NIA consulta memoria de sesión, producto activo, datos comerciales ya entregados y último estado de negociación.",
+      "uses_modules": [
+        "module_memoria_contextual",
+        "module_estado_negociacion"
+      ],
+      "actions": [
+        "load_session_memory",
+        "load_active_product",
+        "load_existing_commercial_fields",
+        "load_current_negotiation_state"
+      ],
+      "next_state": "clasificar_intencion"
+    },
+    {
+      "step": 3,
+      "state": "clasificar_intencion",
+      "description": "NIA identifica la intención principal del mensaje.",
+      "uses_modules": [
+        "module_motor_comercial",
+        "module_estado_negociacion"
+      ],
+      "possible_intents": [
+        "saludo",
+        "consulta_producto_codigo",
+        "consulta_producto_descripcion",
+        "archivo_recibido",
+        "foto_producto",
+        "pide_precio",
+        "pide_cotizacion",
+        "quiere_comprar",
+        "pide_proforma",
+        "objecion_precio",
+        "no_cumple",
+        "seguimiento",
+        "default"
+      ],
+      "transitions": [
+        {
+          "if_intent": "saludo",
+          "next_state": "saludo_breve"
+        },
+        {
+          "if_intent_in": [
+            "consulta_producto_codigo",
+            "consulta_producto_descripcion",
+            "archivo_recibido",
+            "foto_producto"
+          ],
+          "next_state": "buscar_validar_producto"
+        },
+        {
+          "if_intent_in": [
+            "pide_precio",
+            "pide_cotizacion"
+          ],
+          "next_state": "validar_necesidad_clara"
+        },
+        {
+          "if_intent_in": [
+            "quiere_comprar",
+            "pide_proforma"
+          ],
+          "next_state": "preparar_proforma"
+        },
+        {
+          "if_intent_in": [
+            "objecion_precio",
+            "no_cumple"
+          ],
+          "next_state": "rediagnostico_o_alternativa"
+        },
+        {
+          "if_intent": "seguimiento",
+          "next_state": "seguimiento"
+        },
+        {
+          "if_intent": "default",
+          "next_state": "validar_necesidad_clara"
+        }
+      ]
+    },
+    {
+      "step": 4,
+      "state": "saludo_breve",
+      "description": "NIA saluda corto y pregunta qué necesita el cliente.",
+      "response_policy": "Saludar de forma natural, sin discurso largo, y pedir la necesidad principal.",
+      "next_state": "esperar_respuesta_cliente"
+    },
+    {
+      "step": 5,
+      "state": "validar_necesidad_clara",
+      "description": "NIA decide si ya entiende suficientemente la necesidad para buscar o cotizar.",
+      "minimum_checks": [
+        "producto_o_categoria",
+        "aplicacion_o_uso",
+        "especificacion_critica_si_aplica",
+        "cantidad_si_cliente_pide_cotizacion"
+      ],
+      "transitions": [
+        {
+          "if": "necesidad_clara == true",
+          "next_state": "buscar_validar_producto"
+        },
+        {
+          "if": "necesidad_clara == false",
+          "next_state": "preguntar_dato_clave"
+        }
+      ]
+    },
+    {
+      "step": 6,
+      "state": "preguntar_dato_clave",
+      "description": "NIA pregunta solo el dato más importante para poder avanzar.",
+      "rules": [
+        "Una pregunta por turno.",
+        "Pregunta corta.",
+        "No repetir datos ya existentes.",
+        "No pedir todos los datos de una vez."
+      ],
+      "next_state": "esperar_respuesta_cliente"
+    },
+    {
+      "step": 7,
+      "state": "buscar_validar_producto",
+      "description": "NIA busca en catálogo, API o memoria el producto real más adecuado.",
+      "uses_modules": [
+        "module_motor_tecnico_producto",
+        "module_motor_api_productos",
+        "module_guardrails_no_inventar"
+      ],
+      "actions": [
+        "extract_product_signals",
+        "search_catalog",
+        "validate_real_results",
+        "rank_relevant_options"
+      ],
+      "transitions": [
+        {
+          "if": "producto_identificado == true",
+          "next_state": "producto_identificado"
+        },
+        {
+          "if": "producto_identificado == false",
+          "next_state": "preguntar_dato_clave"
+        }
+      ]
+    },
+    {
+      "step": 8,
+      "state": "producto_identificado",
+      "description": "NIA ya tiene un producto activo o una opción real del catálogo.",
+      "actions": [
+        "save_active_product",
+        "set_negotiation_state_producto_identificado",
+        "offer_next_commercial_step"
+      ],
+      "transitions": [
+        {
+          "if": "cliente_pide_precio_o_cotizacion == true",
+          "next_state": "preparar_cotizacion"
+        },
+        {
+          "if": "cliente_pide_precio_o_cotizacion == false",
+          "next_state": "recomendar_siguiente_paso"
+        }
+      ]
+    },
+    {
+      "step": 9,
+      "state": "recomendar_siguiente_paso",
+      "description": "NIA guía al cliente hacia cotización, validación técnica o asesor humano.",
+      "response_policy": "Explicar breve y preguntar si desea cotización o validación comercial.",
+      "next_state": "esperar_respuesta_cliente"
+    },
+    {
+      "step": 10,
+      "state": "preparar_cotizacion",
+      "description": "NIA revisa datos faltantes para dejar lista la solicitud de cotización.",
+      "uses_modules": [
+        "module_motor_cotizacion_precio",
+        "module_memoria_contextual"
+      ],
+      "required_fields": [
+        "producto",
+        "cantidad",
+        "nombre",
+        "empresa",
+        "correo",
+        "ciudad"
+      ],
+      "optional_fields": [
+        "telefono",
+        "presupuesto_aproximado",
+        "fecha_estimada_compra",
+        "documento_tributario"
+      ],
+      "actions": [
+        "calculate_missing_quote_fields",
+        "ask_only_missing_fields",
+        "set_negotiation_state_cotizacion_pendiente"
+      ],
+      "transitions": [
+        {
+          "if": "datos_cotizacion_completos == true",
+          "next_state": "cotizacion_lista_para_asesor"
+        },
+        {
+          "if": "datos_cotizacion_completos == false",
+          "next_state": "pedir_datos_faltantes_cotizacion"
+        }
+      ]
+    },
+    {
+      "step": 11,
+      "state": "pedir_datos_faltantes_cotizacion",
+      "description": "NIA solicita únicamente lo que falta para cotizar.",
+      "rules": [
+        "Si ya tiene nombre, no pedir nombre.",
+        "Si ya tiene empresa, no pedir empresa.",
+        "Si ya tiene correo, no pedir correo.",
+        "Si ya tiene cantidad, no pedir cantidad.",
+        "Si solo falta un dato, pedir solo ese dato."
+      ],
+      "next_state": "esperar_respuesta_cliente"
+    },
+    {
+      "step": 12,
+      "state": "cotizacion_lista_para_asesor",
+      "description": "La solicitud de cotización está lista para asesor, CRM o sistema de cotizaciones.",
+      "actions": [
+        "save_quote_request",
+        "notify_or_escalate_to_advisor",
+        "inform_customer_next_step"
+      ],
+      "next_state": "validando_cumplimiento"
+    },
+    {
+      "step": 13,
+      "state": "validando_cumplimiento",
+      "description": "NIA valida si la cotización o producto cumple con lo que el cliente necesita.",
+      "transitions": [
+        {
+          "if": "cliente_acepta == true",
+          "next_state": "preparar_proforma"
+        },
+        {
+          "if": "cliente_rechaza_o_no_cumple == true",
+          "next_state": "rediagnostico_o_alternativa"
+        },
+        {
+          "if": "cliente_no_responde == true",
+          "next_state": "seguimiento"
+        }
+      ]
+    },
+    {
+      "step": 14,
+      "state": "preparar_proforma",
+      "description": "NIA activa cierre cuando el cliente confirma compra o pide proforma.",
+      "uses_modules": [
+        "module_motor_cierre_proforma",
+        "module_memoria_contextual"
+      ],
+      "required_fields": [
+        "producto",
+        "cantidad",
+        "empresa_o_persona",
+        "documento_tributario_o_identidad",
+        "correo"
+      ],
+      "actions": [
+        "set_negotiation_state_intencion_compra",
+        "calculate_missing_proforma_fields",
+        "ask_only_missing_proforma_fields"
+      ],
+      "rules": [
+        "No volver a vender si ya quiere comprar.",
+        "No volver al diagnóstico técnico salvo que falte información crítica.",
+        "No repetir datos ya entregados."
+      ],
+      "transitions": [
+        {
+          "if": "datos_proforma_completos == true",
+          "next_state": "proforma_lista_para_asesor"
+        },
+        {
+          "if": "datos_proforma_completos == false",
+          "next_state": "pedir_datos_faltantes_proforma"
+        }
+      ]
+    },
+    {
+      "step": 15,
+      "state": "pedir_datos_faltantes_proforma",
+      "description": "NIA pide solo los datos faltantes para proforma.",
+      "next_state": "esperar_respuesta_cliente"
+    },
+    {
+      "step": 16,
+      "state": "proforma_lista_para_asesor",
+      "description": "La solicitud de proforma queda lista para asesor o sistema correspondiente.",
+      "actions": [
+        "save_proforma_request",
+        "escalate_to_advisor",
+        "inform_customer_next_step"
+      ],
+      "next_state": "pago_pendiente"
+    },
+    {
+      "step": 17,
+      "state": "rediagnostico_o_alternativa",
+      "description": "NIA corrige el rumbo si hay objeción, rechazo o no cumplimiento.",
+      "uses_modules": [
+        "module_motor_comercial",
+        "module_motor_tecnico_producto",
+        "module_hibrido_humano_ia"
+      ],
+      "actions": [
+        "acknowledge_objection",
+        "identify_failure_reason",
+        "ask_one_key_question",
+        "search_alternative_if_possible"
+      ],
+      "rules": [
+        "No discutir con el cliente.",
+        "No inventar descuentos.",
+        "No prometer condiciones no confirmadas.",
+        "Volver a entender necesidad si el producto no cumple."
+      ],
+      "next_state": "validar_necesidad_clara"
+    },
+    {
+      "step": 18,
+      "state": "seguimiento",
+      "description": "NIA mantiene viva la conversación con un siguiente paso claro.",
+      "actions": [
+        "summarize_current_status",
+        "suggest_next_step",
+        "keep_conversation_open"
+      ],
+      "next_state": "esperar_respuesta_cliente"
+    },
+    {
+      "step": 19,
+      "state": "esperar_respuesta_cliente",
+      "description": "NIA espera el siguiente mensaje del cliente.",
+      "next_state": "cliente_escribe"
+    }
+  ],
+  "minimal_memory_fields": {
+    "cliente": [
+      "nombre",
+      "empresa",
+      "correo",
+      "telefono",
+      "ciudad",
+      "documento_tributario",
+      "tipo_cliente"
+    ],
+    "producto_activo": [
+      "codigo",
+      "referencia",
+      "nombre",
+      "marca",
+      "cantidad",
+      "aplicacion",
+      "especificaciones_clave"
+    ],
+    "comercial": [
+      "estado_negociacion",
+      "intencion_actual",
+      "datos_faltantes",
+      "presupuesto_aproximado",
+      "fecha_estimada_compra",
+      "cotizacion_id",
+      "proforma_id",
+      "objecion_actual",
+      "ultimo_paso",
+      "siguiente_paso"
+    ]
+  },
+  "response_policy": {
+    "tone": "comercial_tecnico_breve",
+    "max_questions_per_turn": 1,
+    "must_use_memory_before_asking": true,
+    "must_include_next_step": true,
+    "must_not_repeat_existing_data": true,
+    "must_not_invent_commercial_information": true
+  },
+  "recommended_location": "knowledge/nia_os/processes/process_commercial_spine_v1.json"
+}
