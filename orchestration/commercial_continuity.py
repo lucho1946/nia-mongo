@@ -14,12 +14,21 @@
 # - Si el usuario escribe un código explícito dentro del mensaje
 #   de cotización, ese código manda sobre el producto activo.
 #
+# Integración Commercial Spine:
+# - Cuando inicia cotización:
+#   cotizacion_en_proceso -> preparar_cotizacion
+# - Cuando recibe datos parciales:
+#   datos_cotizacion_parciales -> pedir_datos_faltantes_cotizacion
+# - Cuando recibe datos completos:
+#   datos_cotizacion_recibidos -> cotizacion_lista_para_asesor
+#
 # Este módulo NO llama OpenAI.
 # Este módulo NO inventa productos.
 # Este módulo solo:
 # - detecta continuidad comercial
 # - recupera producto real desde memoria o código exacto
 # - construye una respuesta de cotización segura
+# - actualiza estado comercial en sesión
 # ============================================================
 
 from __future__ import annotations
@@ -42,6 +51,9 @@ from orchestration.commercial_data_extractor import (
     merge_commercial_data,
     get_missing_quote_fields,
     build_commercial_data_response,
+)
+from orchestration.commercial_state_engine import (
+    update_commercial_process_state,
 )
 
 
@@ -80,6 +92,13 @@ def _safe_str(value: Any, default: str = "") -> str:
         return value if value else default
     except Exception:
         return default
+
+
+def _has_value(value: Any) -> bool:
+    """
+    Valida si un valor contiene información útil.
+    """
+    return value not in [None, "", [], {}]
 
 
 # ============================================================
@@ -192,33 +211,146 @@ def is_commercial_continuation_message(message: str) -> bool:
 
 
 # ============================================================
-# RECUPERACIÓN DE PRODUCTO
+# RECUPERACIÓN / NORMALIZACIÓN DE PRODUCTO
 # ============================================================
 
 def _format_selected_product(product: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Normaliza el producto seleccionado usando el formateador oficial.
+    Normaliza el producto seleccionado usando el formateador oficial,
+    pero sin perder campos si el producto ya viene normalizado.
 
-    Esto conserva:
-    - precio
-    - disponibilidad
-    - tiempo de entrega
-    - referencia
-    - características
+    Problema que evita:
+    - last_selected_product puede venir ya formateado desde memoria.
+    - formatear_producto() puede esperar estructura cruda de catálogo.
+    - Si se intenta reformatear un producto ya normalizado, puede devolver
+      campos vacíos.
+
+    Estrategia:
+    - Intenta formatear.
+    - Mezcla el resultado formateado con el original.
+    - Recupera defensivamente código, nombre, marca, precio y demás campos.
     """
     if not isinstance(product, dict):
         return {}
+
+    original = dict(product)
 
     try:
         formatted = formatear_producto(product)
 
         if isinstance(formatted, dict) and formatted:
-            return formatted
+            merged = dict(formatted)
+
+            critical_fields = [
+                "codigo",
+                "referencia",
+                "ref_alternativa",
+                "nombre",
+                "descripcion",
+                "marca",
+                "precio",
+                "disponibilidad",
+                "tiempo_entrega",
+                "nivel_0",
+                "nivel_1",
+                "nivel_2",
+                "nivel_3",
+                "nivel_4",
+                "caracteristicas",
+                "aplicaciones",
+                "dimension",
+                "peso",
+                "equivalente",
+                "equivalente_2",
+                "score_oportunidad",
+                "tipo_sku",
+            ]
+
+            for field in critical_fields:
+                if not _has_value(merged.get(field)) and _has_value(original.get(field)):
+                    merged[field] = original.get(field)
+
+            # Compatibilidad con campos crudos de catálogo.
+            if not _has_value(merged.get("codigo")):
+                merged["codigo"] = (
+                    original.get("CODIGO")
+                    or original.get("codigo")
+                    or ""
+                )
+
+            if not _has_value(merged.get("referencia")):
+                merged["referencia"] = (
+                    original.get("REFERENCIA")
+                    or original.get("referencia")
+                    or ""
+                )
+
+            if not _has_value(merged.get("ref_alternativa")):
+                merged["ref_alternativa"] = (
+                    original.get("REF_ALTERNATIVA")
+                    or original.get("ref_alternativa")
+                    or ""
+                )
+
+            if not _has_value(merged.get("nombre")):
+                merged["nombre"] = (
+                    original.get("DESCRIPCION_CORTA_PRE")
+                    or original.get("NOMBRE")
+                    or original.get("descripcion")
+                    or original.get("nombre")
+                    or ""
+                )
+
+            if not _has_value(merged.get("descripcion")):
+                merged["descripcion"] = (
+                    original.get("DESCRIPCION")
+                    or original.get("descripcion")
+                    or original.get("nombre")
+                    or ""
+                )
+
+            if not _has_value(merged.get("marca")):
+                merged["marca"] = (
+                    original.get("MARCA_LET")
+                    or original.get("MARCA")
+                    or original.get("marca")
+                    or ""
+                )
+
+            if not _has_value(merged.get("precio")):
+                merged["precio"] = (
+                    original.get("PRECIO")
+                    or original.get("precio_formateado")
+                    or original.get("precio")
+                    or "Consultarnos"
+                )
+
+            if not _has_value(merged.get("disponibilidad")):
+                merged["disponibilidad"] = (
+                    original.get("DISPONIBILIDAD")
+                    or original.get("stock")
+                    or original.get("STOCK")
+                    or original.get("disponibilidad")
+                    or "Consultar disponibilidad"
+                )
+
+            if not _has_value(merged.get("tiempo_entrega")):
+                merged["tiempo_entrega"] = (
+                    original.get("TIEMPO_ENTREGA")
+                    or original.get("entrega")
+                    or original.get("tiempo_entrega")
+                    or ""
+                )
+
+            if not isinstance(merged.get("caracteristicas"), list):
+                merged["caracteristicas"] = original.get("caracteristicas", [])
+
+            return merged
 
     except Exception:
         pass
 
-    return product
+    return original
 
 
 def _extract_code_from_message(message: str) -> Optional[str]:
@@ -236,8 +368,6 @@ def _extract_code_from_message(message: str) -> Optional[str]:
     if code:
         return _safe_str(code)
 
-    # Fallback adicional para formatos tipo:
-    # "(Código: P256146)" o "codigo:P256146"
     raw = str(message or "")
 
     match = re.search(
@@ -284,6 +414,9 @@ def _extract_code_from_context(session: Dict[str, Any]) -> Optional[str]:
     """
     Intenta obtener código desde contexto/memoria.
     """
+    if not isinstance(session, dict):
+        return None
+
     context = session.get("context", {})
 
     if not isinstance(context, dict):
@@ -302,7 +435,7 @@ def _extract_code_from_context(session: Dict[str, Any]) -> Optional[str]:
 
 def _recover_product_from_context_code(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Recupera producto desde código guardado en contexto.
+    Recupera producto desde código guardado en contexto o memoria.
     """
     code = _extract_code_from_context(session)
 
@@ -405,6 +538,9 @@ def build_commercial_continuity_response(
     """
     Si el mensaje es continuidad comercial y hay producto seleccionado,
     construye respuesta sin buscar productos nuevos.
+
+    Además conecta el estado interno de NIA con el Commercial Spine:
+    cotizacion_en_proceso -> preparar_cotizacion.
     """
     if not is_commercial_continuation_message(message):
         return None
@@ -420,16 +556,45 @@ def build_commercial_continuity_response(
     selected_product = _format_selected_product(selected_product)
 
     codigo = _product_code(selected_product)
-    nombre = _product_name(selected_product)
-    marca = _product_brand(selected_product)
-    precio = _product_price(selected_product)
-    disponibilidad = _product_availability(selected_product)
-    tiempo_entrega = _product_delivery(selected_product)
 
-    disponibilidad_txt = disponibilidad
+    # --------------------------------------------------------
+    # Protección defensiva:
+    # Si el producto activo quedó sin código después del formateo,
+    # intentamos recuperarlo nuevamente desde el código guardado
+    # en contexto / last_selected_product_code.
+    #
+    # --------------------------------------------------------
+    if not codigo:
+        recovered_product = _recover_product_from_context_code(session)
 
-    if tiempo_entrega and tiempo_entrega not in disponibilidad_txt:
-        disponibilidad_txt = f"{disponibilidad} · {tiempo_entrega}"
+        if recovered_product:
+            selected_product = _format_selected_product(recovered_product)
+            codigo = _product_code(selected_product)
+
+    # Si aun así no hay código, no devolvemos una card vacía.
+    if not codigo:
+        return None
+
+    # --------------------------------------------------------
+    # Persistimos el producto activo en sesión.
+    # Esto ayuda a que el state engine calcule correctamente
+    # si ya existe producto para cotización.
+    # --------------------------------------------------------
+    session["last_selected_product"] = selected_product
+    session["last_selected_product_code"] = codigo
+
+    # --------------------------------------------------------
+    # Estado interno actual de NIA.
+    # Este estado será traducido por commercial_state_engine.py
+    # hacia el estado oficial del Commercial Spine:
+    # cotizacion_en_proceso -> preparar_cotizacion
+    # --------------------------------------------------------
+    session["estado_negociacion"] = "cotizacion_en_proceso"
+
+    update_commercial_process_state(
+        session=session,
+        detected_intent=detected_intent,
+    )
 
     response = (
         "Claro. Puedo ayudarte a iniciar la cotización del producto que quieres.\n\n"
@@ -446,11 +611,27 @@ def build_commercial_continuity_response(
         "decision_reason": "commercial_continuity_last_selected_product",
         "compatible_count": 1,
         "requires_customer_data": True,
-        "estado_negociacion": "cotizacion_en_proceso",
+
+        # Estado interno
+        "estado_negociacion": session.get("estado_negociacion"),
+
+        # Estado oficial del Commercial Spine
+        "commercial_process_id": session.get("commercial_process_id"),
+        "commercial_process_state": session.get("commercial_process_state"),
+        "ultimo_paso": session.get("ultimo_paso"),
+        "siguiente_paso": session.get("siguiente_paso"),
+        "datos_faltantes": session.get("datos_faltantes"),
+        "intencion_actual": session.get("intencion_actual"),
+
         "cards": [selected_product],
         "results": [selected_product],
     }
-    
+
+
+# ============================================================
+# CAPTURA DE DATOS COMERCIALES
+# ============================================================
+
 def _is_waiting_for_commercial_customer_data(session: Dict[str, Any]) -> bool:
     """
     Detecta si NIA está esperando datos comerciales del cliente.
@@ -461,7 +642,8 @@ def _is_waiting_for_commercial_customer_data(session: Dict[str, Any]) -> bool:
     Señales válidas:
     - estado comercial de cotización
     - último mensaje de NIA pidió datos de contacto
-    - existe producto activo seleccionado
+    - historial reciente contiene la solicitud de datos
+    - existe producto activo seleccionado y estado comercial
     """
     if not isinstance(session, dict):
         return False
@@ -531,17 +713,9 @@ def build_commercial_data_capture_response(
 ) -> Optional[Dict[str, Any]]:
     """
     Captura datos comerciales cuando ya hay una cotización en proceso.
-
-    Ejemplo:
-    NIA:
-    ¿Me confirmas nombre, empresa, correo o teléfono?
-
-    Usuario:
-    Soy Carlos de Industrias ABC, mi correo es carlos@abc.com
-
-    NIA:
-    Guarda nombre, empresa y correo.
-    Responde pidiendo solo lo faltante si falta algo.
+    Además conecta el estado interno con el Commercial Spine:
+    datos_cotizacion_parciales -> pedir_datos_faltantes_cotizacion
+    datos_cotizacion_recibidos -> cotizacion_lista_para_asesor
     """
     if not isinstance(session, dict):
         return None
@@ -568,12 +742,44 @@ def build_commercial_data_capture_response(
     else:
         session["estado_negociacion"] = "datos_cotizacion_recibidos"
 
-    response_text = build_commercial_data_response(merged_data)
-
     selected_product = get_last_selected_product(session)
 
-    cards = [selected_product] if selected_product else []
-    results = [selected_product] if selected_product else []
+    # Si el producto activo viene incompleto, intentamos recuperarlo por código.
+    if selected_product:
+        selected_product = _format_selected_product(selected_product)
+
+        selected_code = _product_code(selected_product)
+
+        if not selected_code:
+            recovered_product = _recover_product_from_context_code(session)
+
+            if recovered_product:
+                selected_product = _format_selected_product(recovered_product)
+                selected_code = _product_code(selected_product)
+
+        if selected_code:
+            session["last_selected_product"] = selected_product
+            session["last_selected_product_code"] = selected_code
+    else:
+        recovered_product = _recover_product_from_context_code(session)
+
+        if recovered_product:
+            selected_product = _format_selected_product(recovered_product)
+            selected_code = _product_code(selected_product)
+
+            if selected_code:
+                session["last_selected_product"] = selected_product
+                session["last_selected_product_code"] = selected_code
+
+    update_commercial_process_state(
+        session=session,
+        detected_intent=detected_intent,
+    )
+
+    response_text = build_commercial_data_response(merged_data)
+
+    cards = [selected_product] if selected_product and _product_code(selected_product) else []
+    results = [selected_product] if selected_product and _product_code(selected_product) else []
 
     return {
         "intent": detected_intent,
@@ -584,8 +790,21 @@ def build_commercial_data_capture_response(
         "decision_reason": "commercial_data_capture",
         "compatible_count": len(results),
         "requires_customer_data": bool(missing),
-        "estado_negociacion": session.get("estado_negociacion"),
+
+        # Datos comerciales capturados
         "commercial_data": merged_data,
+
+        # Estado interno
+        "estado_negociacion": session.get("estado_negociacion"),
+
+        # Estado oficial del Commercial Spine
+        "commercial_process_id": session.get("commercial_process_id"),
+        "commercial_process_state": session.get("commercial_process_state"),
+        "ultimo_paso": session.get("ultimo_paso"),
+        "siguiente_paso": session.get("siguiente_paso"),
+        "datos_faltantes": session.get("datos_faltantes"),
+        "intencion_actual": session.get("intencion_actual"),
+
         "cards": cards,
         "results": results,
     }
