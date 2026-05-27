@@ -65,6 +65,15 @@ SESSION_TTL_SECONDS = 691200  # 8 días
 # update_context() solo guarda claves presentes en esta lista.
 # Por eso aquí deben existir tanto campos técnicos como banderas
 # conversacionales útiles.
+COMMERCIAL_DATA_KEYS = [
+    "nombre_cliente",
+    "empresa",
+    "correo",
+    "telefono",
+    "cantidad",
+    "presupuesto_aproximado",
+    "fecha_estimada_compra",
+]
 
 TECHNICAL_CONTEXT_KEYS = [
     "familia",
@@ -222,6 +231,15 @@ def _build_empty_session() -> Dict[str, Any]:
         "last_selected_product": None,
         "last_selected_product_code": None,
         "estado_negociacion": None,
+
+        # ----------------------------------------------------
+        # Datos comerciales estructurados
+        # ----------------------------------------------------
+        # Se usan para cotización, proforma y seguimiento.
+        # No reemplazan el contexto técnico.
+        # Se guardan en MongoDB con la sesión.
+        # ----------------------------------------------------
+        "commercial_data": {key: None for key in COMMERCIAL_DATA_KEYS},
 
         # ----------------------------------------------------
         # Última pregunta activa / slot pendiente
@@ -635,6 +653,63 @@ def get_last_selected_product(session: Dict[str, Any]) -> Optional[Dict[str, Any
             return deepcopy(first)
 
     return None
+
+# ============================================================
+# DATOS COMERCIALES
+# ============================================================
+
+def get_commercial_data(session: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Obtiene datos comerciales estructurados de la sesión.
+    """
+    data = session.get("commercial_data")
+
+    if not isinstance(data, dict):
+        data = {}
+
+    normalized = {}
+
+    for key in COMMERCIAL_DATA_KEYS:
+        normalized[key] = data.get(key)
+
+    return deepcopy(normalized)
+
+
+def update_commercial_data(
+    session: Dict[str, Any],
+    new_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Actualiza datos comerciales sin sobrescribir con vacíos.
+
+    Estos datos se guardan en MongoDB al ejecutar save_session(session).
+    """
+    if not isinstance(new_data, dict):
+        return session
+
+    current = get_commercial_data(session)
+
+    for key in COMMERCIAL_DATA_KEYS:
+        value = new_data.get(key)
+
+        if value in [None, "", [], {}]:
+            continue
+
+        current[key] = value
+
+    session["commercial_data"] = current
+    session["updated_at"] = _now_iso()
+
+    return session
+
+
+def clear_commercial_data(session: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Limpia datos comerciales estructurados.
+    """
+    session["commercial_data"] = {key: None for key in COMMERCIAL_DATA_KEYS}
+    session["updated_at"] = _now_iso()
+    return session
 
 
 # ============================================================

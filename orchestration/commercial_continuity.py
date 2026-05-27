@@ -14,14 +14,6 @@
 # - Si el usuario escribe un código explícito dentro del mensaje
 #   de cotización, ese código manda sobre el producto activo.
 #
-# Ejemplo:
-# - NIA muestra lista:
-#   1. P101722
-#   2. P256146
-# - Usuario:
-#   "Quiero cotizar: ... (Código: P256146)"
-# - NIA debe cotizar P256146, NO P101722.
-#
 # Este módulo NO llama OpenAI.
 # Este módulo NO inventa productos.
 # Este módulo solo:
@@ -39,9 +31,18 @@ from typing import Any, Dict, Optional
 from memory.conversation_memory import (
     get_last_selected_product,
     extract_exact_product_code,
+    get_commercial_data,
+    update_commercial_data,
 )
 from retrieval.search_adapter import search_exact_code
 from services.search import formatear_producto
+from orchestration.commercial_data_extractor import (
+    extract_commercial_data,
+    has_any_commercial_data,
+    merge_commercial_data,
+    get_missing_quote_fields,
+    build_commercial_data_response,
+)
 
 
 # ============================================================
@@ -448,4 +449,143 @@ def build_commercial_continuity_response(
         "estado_negociacion": "cotizacion_en_proceso",
         "cards": [selected_product],
         "results": [selected_product],
+    }
+    
+def _is_waiting_for_commercial_customer_data(session: Dict[str, Any]) -> bool:
+    """
+    Detecta si NIA está esperando datos comerciales del cliente.
+
+    No dependemos únicamente de estado_negociacion porque en producción
+    puede haber cambios de worker, sesión rehidratada o estados anteriores.
+
+    Señales válidas:
+    - estado comercial de cotización
+    - último mensaje de NIA pidió datos de contacto
+    - existe producto activo seleccionado
+    """
+    if not isinstance(session, dict):
+        return False
+
+    estado_negociacion = session.get("estado_negociacion")
+
+    estados_validos = {
+        "cotizacion_en_proceso",
+        "cotizacion_pendiente",
+        "datos_cotizacion_parciales",
+    }
+
+    if estado_negociacion in estados_validos:
+        return True
+
+    last_question = _normalize(
+        session.get("last_assistant_question_text")
+        or session.get("last_assistant_question")
+        or ""
+    )
+
+    if (
+        "cotizacion" in last_question
+        and (
+            "nombre" in last_question
+            or "empresa" in last_question
+            or "correo" in last_question
+            or "telefono" in last_question
+        )
+    ):
+        return True
+
+    history = session.get("history", [])
+
+    if isinstance(history, list) and history:
+        last_assistant_messages = [
+            item.get("content", "")
+            for item in history[-5:]
+            if isinstance(item, dict) and item.get("role") == "assistant"
+        ]
+
+        joined = _normalize(" ".join(last_assistant_messages))
+
+        if (
+            "cotizacion" in joined
+            and (
+                "nombre" in joined
+                or "empresa" in joined
+                or "correo" in joined
+                or "telefono" in joined
+            )
+        ):
+            return True
+
+    selected_product = get_last_selected_product(session)
+
+    if selected_product and estado_negociacion:
+        return True
+
+    return False
+
+
+def build_commercial_data_capture_response(
+    session: Dict[str, Any],
+    message: str,
+    detected_intent: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Captura datos comerciales cuando ya hay una cotización en proceso.
+
+    Ejemplo:
+    NIA:
+    ¿Me confirmas nombre, empresa, correo o teléfono?
+
+    Usuario:
+    Soy Carlos de Industrias ABC, mi correo es carlos@abc.com
+
+    NIA:
+    Guarda nombre, empresa y correo.
+    Responde pidiendo solo lo faltante si falta algo.
+    """
+    if not isinstance(session, dict):
+        return None
+
+    incoming_data = extract_commercial_data(message)
+
+    # Si el mensaje no trae datos comerciales claros, no interceptamos.
+    if not has_any_commercial_data(incoming_data):
+        return None
+
+    # Solo capturamos datos si el hilo realmente está esperando datos comerciales.
+    if not _is_waiting_for_commercial_customer_data(session):
+        return None
+
+    current_data = get_commercial_data(session)
+    merged_data = merge_commercial_data(current_data, incoming_data)
+
+    update_commercial_data(session, merged_data)
+
+    missing = get_missing_quote_fields(merged_data)
+
+    if missing:
+        session["estado_negociacion"] = "datos_cotizacion_parciales"
+    else:
+        session["estado_negociacion"] = "datos_cotizacion_recibidos"
+
+    response_text = build_commercial_data_response(merged_data)
+
+    selected_product = get_last_selected_product(session)
+
+    cards = [selected_product] if selected_product else []
+    results = [selected_product] if selected_product else []
+
+    return {
+        "intent": detected_intent,
+        "response": response_text,
+        "needs_clarification": bool(missing),
+        "context": session.get("context", {}),
+        "session_id": session.get("session_id"),
+        "decision_reason": "commercial_data_capture",
+        "compatible_count": len(results),
+        "requires_customer_data": bool(missing),
+        "estado_negociacion": session.get("estado_negociacion"),
+        "commercial_data": merged_data,
+        "cards": cards,
+        "results": results,
     }
