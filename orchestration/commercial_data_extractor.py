@@ -255,14 +255,25 @@ def extract_purchase_date(message: str) -> str:
 def extract_name(message: str) -> str:
     """
     Extrae nombre del cliente cuando viene explícito.
+    
+    Regla importante:
+    Si el usuario dice "Soy Carlos de Industrias ABC",
+    el nombre debe quedar "Carlos", no "Carlos de Industrias ABC".
     """
     raw = str(message or "")
 
     patterns = [
-        r"\bmi nombre es\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,50})",
-        r"\bme llamo\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,50})",
-        r"\bsoy\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,40})(?:\s+de\s+|,|\.|$)",
-        r"\bnombre\s*[:\-]?\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,50})",
+        # Mi nombre es Carlos ...
+        r"\bmi nombre es\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,50}?)(?=\s+de\s+|,|\.|$|\s+mi\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+|\s+empresa\s+)",
+
+        # Me llamo Andrea ...
+        r"\bme llamo\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,50}?)(?=\s+de\s+|,|\.|$|\s+mi\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+|\s+empresa\s+)",
+
+        # Soy Carlos de Industrias ABC
+        r"\bsoy\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,40}?)(?=\s+de\s+|,|\.|$|\s+mi\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+|\s+empresa\s+)",
+
+        # Nombre: Carlos
+        r"\bnombre\s*[:\-]?\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,50}?)(?=,|\.|$|\s+empresa\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+)",
     ]
 
     for pattern in patterns:
@@ -271,16 +282,17 @@ def extract_name(message: str) -> str:
         if match:
             name = clean_value(match.group(1))
 
-            # Evita tomar frases comerciales completas como nombre.
+            # Limpieza defensiva por si entra texto adicional.
             name = re.split(
-                r"\s+(?:mi correo|correo|telefono|teléfono|celular|empresa)\b",
+                r"\s+(?:de la empresa|de|empresa|mi correo|correo|telefono|teléfono|celular|mi numero|mi número)\b",
                 name,
                 flags=re.IGNORECASE,
             )[0]
 
             name = clean_value(name)
 
-            if name:
+            # Evita guardar frases largas como nombre.
+            if name and len(name.split()) <= 4:
                 return title_safe(name)
 
     return ""
@@ -289,6 +301,8 @@ def extract_name(message: str) -> str:
 def extract_company(message: str) -> str:
     """
     Extrae empresa cuando viene con señales claras.
+    Regla:
+    La empresa se corta antes de correo, teléfono u otros datos.
     """
     raw = str(message or "")
 
@@ -296,7 +310,9 @@ def extract_company(message: str) -> str:
         r"\bempresa\s*[:\-]?\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_-]{2,80})",
         r"\bde la empresa\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_-]{2,80})",
         r"\btrabajo en\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_-]{2,80})",
-        r"\bsoy\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,40}\s+de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_-]{2,80})",
+
+        # Soy Carlos de Industrias ABC
+        r"\bsoy\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,40}?\s+de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_-]{2,80})",
     ]
 
     for pattern in patterns:
@@ -305,9 +321,9 @@ def extract_company(message: str) -> str:
         if match:
             company = clean_value(match.group(1))
 
-            # Corta cuando empiezan otros datos.
+            # Corta cuando empiezan otros datos comerciales.
             company = re.split(
-                r"\s+(?:mi correo|correo|telefono|teléfono|celular|mi numero|mi número)\b",
+                r"\s+(?:mi correo|correo|email|e-mail|telefono|teléfono|celular|mi numero|mi número|cantidad|presupuesto)\b",
                 company,
                 flags=re.IGNORECASE,
             )[0]
@@ -318,7 +334,6 @@ def extract_company(message: str) -> str:
                 return title_safe(company)
 
     return ""
-
 
 # ============================================================
 # EXTRACTOR PRINCIPAL
