@@ -574,16 +574,210 @@ def extract_company(message: str) -> str:
 
     return ""
 
-
 # ============================================================
-# EXTRACTOR PRINCIPAL
+# EXTRACCIÓN COMPACTA DE DATOS COMERCIALES
 # ============================================================
 
-def extract_commercial_data(message: str) -> Dict[str, Any]:
+def _looks_like_compact_person_name(value: str) -> bool:
     """
-    Extrae datos comerciales desde un mensaje.
+    Valida un nombre corto dentro de formato compacto.
 
-    Retorna siempre todas las claves con None o valor.
+    Ejemplos válidos:
+    - Luis Diaz
+    - Carlos Perez
+    - Luisa
+    - Andrea Maria
+
+    Evita tomar productos, códigos o datos técnicos como nombre.
+    """
+    value = clean_value(value)
+    normalized = normalize_text(value)
+
+    if not value or not normalized:
+        return False
+
+    if re.search(r"\d", value):
+        return False
+
+    words = value.split()
+
+    if not (1 <= len(words) <= 5):
+        return False
+
+    blocked_terms = {
+        "sensor",
+        "motor",
+        "variador",
+        "plc",
+        "rele",
+        "relé",
+        "valvula",
+        "válvula",
+        "producto",
+        "cotizacion",
+        "cotización",
+        "precio",
+        "referencia",
+        "codigo",
+        "código",
+        "siemens",
+        "lutron",
+        "autonics",
+        "weg",
+        "schneider",
+        "abb",
+        "omron",
+    }
+
+    if normalized in blocked_terms:
+        return False
+
+    if any(term in normalized.split() for term in blocked_terms):
+        return False
+
+    return bool(re.fullmatch(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,80}", value))
+
+
+def _looks_like_compact_company(value: str) -> bool:
+    """
+    Valida una empresa dentro de formato compacto.
+
+    En este caso aceptamos empresas de una palabra porque en datos
+    compactos es común que el cliente escriba:
+    - ViaIndustrial
+    - VIA
+    - ABC
+    - TermoControl
+
+    Esta función solo se usa cuando el mensaje trae también contacto
+    claro, como correo o teléfono.
+    """
+    value = clean_value(value)
+    normalized = normalize_text(value)
+
+    if not value or not normalized:
+        return False
+
+    if re.search(r"@", value):
+        return False
+
+    if re.fullmatch(r"\+?\d[\d\s().-]{6,}\d", value):
+        return False
+
+    words = value.split()
+
+    if not (1 <= len(words) <= 8):
+        return False
+
+    blocked_terms = {
+        "sensor",
+        "motor",
+        "variador",
+        "plc",
+        "producto",
+        "cotizacion",
+        "cotización",
+        "precio",
+        "referencia",
+        "codigo",
+        "código",
+    }
+
+    if normalized in blocked_terms:
+        return False
+
+    if any(term in normalized.split() for term in blocked_terms):
+        return False
+
+    return bool(re.fullmatch(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100}", value))
+
+
+def _remove_contact_values(raw: str, email: str, phone: str) -> str:
+    """
+    Elimina correo/teléfono del texto para analizar solo nombre y empresa.
+    """
+    text = str(raw or "")
+
+    if email:
+        text = re.sub(re.escape(email), " ", text, flags=re.IGNORECASE)
+
+    if phone:
+        # Remueve el teléfono tal como venga escrito o normalizado.
+        text = text.replace(phone, " ")
+
+        phone_digits = re.sub(r"\D", "", phone)
+
+        if phone_digits:
+            text = re.sub(
+                r"(?:\+?\d[\d\s().-]{6,}\d)",
+                lambda match: " " if re.sub(r"\D", "", match.group(0)).endswith(phone_digits) else match.group(0),
+                text,
+            )
+
+    return clean_value(text)
+
+
+def _split_compact_segments(text: str) -> List[str]:
+    """
+    Divide un texto compacto en segmentos.
+
+    Soporta:
+    - Luis Diaz, ViaIndustrial
+    - Luis Diaz - ViaIndustrial
+    - Luis Diaz / ViaIndustrial
+    - Luis Diaz
+      ViaIndustrial
+    """
+    text = str(text or "")
+
+    # Normaliza saltos y separadores comunes.
+    text = text.replace("\r", "\n")
+
+    raw_parts = re.split(
+        r"(?:\n+|,|;|\||/| - |\s+-\s+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    parts: List[str] = []
+
+    for part in raw_parts:
+        part = clean_value(part)
+
+        # Limpieza defensiva de etiquetas si vienen mezcladas.
+        part = re.sub(
+            r"^(?:nombre|cliente|empresa|compañia|compania|correo|email|e-mail|telefono|teléfono|celular)\s*[:\-]?\s*",
+            "",
+            part,
+            flags=re.IGNORECASE,
+        )
+
+        part = clean_value(part)
+
+        if part:
+            parts.append(part)
+
+    return parts
+
+
+def extract_compact_commercial_data(
+    message: str,
+    email: str = "",
+    phone: str = "",
+) -> Dict[str, Any]:
+    """
+    Extrae datos comerciales cuando el cliente los manda en formato compacto.
+
+    Casos soportados:
+    - "Luis Diaz, ViaIndustrial. luis@email.com"
+    - "Luis Diaz, ViaIndustrial, luis@email.com"
+    - "Luis Diaz - ViaIndustrial - 3001234567"
+    - "Luis Diaz / Industrias ABC / luis@email.com"
+    - "Luis Diaz\\nIndustrias ABC\\nluis@email.com"
+
+    Regla de seguridad:
+    Solo inferimos nombre/empresa compactos si el mensaje trae contacto
+    claro: correo o teléfono. Esto evita confundir búsquedas de producto.
     """
     data = {
         "nombre_cliente": None,
@@ -595,19 +789,13 @@ def extract_commercial_data(message: str) -> Dict[str, Any]:
         "fecha_estimada_compra": None,
     }
 
-    email = extract_email(message)
-    phone = extract_phone(message)
-    quantity = extract_quantity(message)
-    budget = extract_budget(message)
-    purchase_date = extract_purchase_date(message)
-    name = extract_name(message)
-    company = extract_company(message)
+    raw = str(message or "")
 
-    if name:
-        data["nombre_cliente"] = name
+    email = email or extract_email(raw)
+    phone = phone or extract_phone(raw)
 
-    if company:
-        data["empresa"] = company
+    if not email and not phone:
+        return data
 
     if email:
         data["correo"] = email
@@ -615,6 +803,110 @@ def extract_commercial_data(message: str) -> Dict[str, Any]:
     if phone:
         data["telefono"] = phone
 
+    text_without_contact = _remove_contact_values(raw, email, phone)
+    segments = _split_compact_segments(text_without_contact)
+
+    if len(segments) < 2:
+        return data
+
+    first = segments[0]
+    second = segments[1]
+
+    if _looks_like_compact_person_name(first):
+        data["nombre_cliente"] = title_safe(first)
+
+    if _looks_like_compact_company(second):
+        data["empresa"] = title_safe(second)
+
+    return data
+
+# ============================================================
+# EXTRACTOR PRINCIPAL
+# ============================================================
+
+def extract_commercial_data(message: str) -> Dict[str, Any]:
+    """
+    Extrae datos comerciales desde un mensaje.
+
+    Retorna siempre todas las claves con None o valor.
+
+    Orden de extracción:
+    1. Extrae contacto claro: correo / teléfono.
+    2. Extrae datos explícitos con frases naturales:
+    3. Extrae datos compactos cuando el cliente envía:
+
+    Regla de seguridad:
+    La extracción compacta solo rellena nombre/empresa si existe
+    correo o teléfono claro en el mismo mensaje.
+    """
+    data = {
+        "nombre_cliente": None,
+        "empresa": None,
+        "correo": None,
+        "telefono": None,
+        "cantidad": None,
+        "presupuesto_aproximado": None,
+        "fecha_estimada_compra": None,
+    }
+
+    # --------------------------------------------------------
+    # 1. Extracciones básicas
+    # --------------------------------------------------------
+    email = extract_email(message)
+    phone = extract_phone(message)
+    quantity = extract_quantity(message)
+    budget = extract_budget(message)
+    purchase_date = extract_purchase_date(message)
+
+    # --------------------------------------------------------
+    # 2. Extracciones explícitas
+    # --------------------------------------------------------
+    name = extract_name(message)
+    company = extract_company(message)
+
+    # --------------------------------------------------------
+    # 3. Extracción compacta
+    # --------------------------------------------------------
+    compact_data = extract_compact_commercial_data(
+        message=message,
+        email=email,
+        phone=phone,
+    )
+
+    # --------------------------------------------------------
+    # 4. Aplicar datos explícitos primero
+    # --------------------------------------------------------
+    if name:
+        data["nombre_cliente"] = name
+
+    if company:
+        data["empresa"] = company
+
+    # --------------------------------------------------------
+    # 5. Completar con datos compactos si los explícitos faltan
+    # --------------------------------------------------------
+    if compact_data.get("nombre_cliente") and not data.get("nombre_cliente"):
+        data["nombre_cliente"] = compact_data["nombre_cliente"]
+
+    if compact_data.get("empresa") and not data.get("empresa"):
+        data["empresa"] = compact_data["empresa"]
+
+    # --------------------------------------------------------
+    # 6. Contacto
+    # --------------------------------------------------------
+    if email:
+        data["correo"] = email
+    elif compact_data.get("correo"):
+        data["correo"] = compact_data["correo"]
+
+    if phone:
+        data["telefono"] = phone
+    elif compact_data.get("telefono"):
+        data["telefono"] = compact_data["telefono"]
+
+    # --------------------------------------------------------
+    # 7. Otros datos comerciales
+    # --------------------------------------------------------
     if quantity:
         data["cantidad"] = quantity
 
