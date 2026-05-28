@@ -2,40 +2,32 @@
 # orchestration/commercial_continuity.py
 # ============================================================
 # RESPONSABILIDAD:
-# Detectar continuidad comercial.
+# Detectar continuidad comercial y capturar datos comerciales
+# de forma contextual.
 #
 # Casos que resuelve:
 # - Usuario ya seleccionó un producto.
-# - Luego dice: "Envíame una cotización".
+# - Luego dice: "quiero cotizar este producto".
 # - NIA debe continuar con ese producto.
 # - NIA NO debe buscar productos nuevos con la frase "cotización".
+# - Si NIA está esperando datos comerciales, debe interpretar
+#   respuestas cortas como "Luisa", "Industrias ABC",
+#   "Se llama Industrias ABC" o "luisa@abc.com" según el contexto.
 #
-# Mejora clave:
-# - Si el usuario escribe un código explícito dentro del mensaje
-#   de cotización, ese código manda sobre el producto activo.
-#
-# Integración Commercial Spine:
-# - Cuando inicia cotización:
-#   cotizacion_en_proceso -> preparar_cotizacion
-# - Cuando recibe datos parciales:
-#   datos_cotizacion_parciales -> pedir_datos_faltantes_cotizacion
-# - Cuando recibe datos completos:
-#   datos_cotizacion_recibidos -> cotizacion_lista_para_asesor
-#
-# Este módulo NO llama OpenAI.
-# Este módulo NO inventa productos.
-# Este módulo solo:
-# - detecta continuidad comercial
-# - recupera producto real desde memoria o código exacto
-# - construye una respuesta de cotización segura
-# - actualiza estado comercial en sesión
+# Alineación con Don Andrés / Commercial Spine:
+# - Leer contexto antes de responder.
+# - No pedir datos que ya existan en memoria.
+# - Preguntar solo lo faltante.
+# - Mantener producto activo.
+# - Mantener estado comercial claro.
+# - No inventar producto, precio, disponibilidad ni compatibilidad.
 # ============================================================
 
 from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from memory.conversation_memory import (
     get_last_selected_product,
@@ -99,6 +91,46 @@ def _has_value(value: Any) -> bool:
     Valida si un valor contiene información útil.
     """
     return value not in [None, "", [], {}]
+
+
+def _title_safe(value: str) -> str:
+    """
+    Capitaliza de forma simple para mantener salida legible.
+    """
+    value = _safe_str(value)
+
+    if not value:
+        return ""
+
+    return " ".join(part.capitalize() for part in value.split())
+
+
+def _empty_commercial_data() -> Dict[str, Any]:
+    """
+    Estructura vacía estándar de datos comerciales.
+    """
+    return {
+        "nombre_cliente": None,
+        "empresa": None,
+        "correo": None,
+        "telefono": None,
+        "cantidad": None,
+        "presupuesto_aproximado": None,
+        "fecha_estimada_compra": None,
+    }
+
+
+def _merge_inferred_data(base: Dict[str, Any], inferred: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Combina datos inferidos sin sobrescribir datos explícitos ya detectados.
+    """
+    merged = dict(base or _empty_commercial_data())
+
+    for key, value in inferred.items():
+        if _has_value(value) and not _has_value(merged.get(key)):
+            merged[key] = value
+
+    return merged
 
 
 # ============================================================
@@ -186,13 +218,9 @@ def is_commercial_continuation_message(message: str) -> bool:
     if any(_normalize(phrase) in text for phrase in COMMERCIAL_CONTINUITY_PHRASES):
         return True
 
-    # Caso flexible:
-    # "cotización", "cotizacion", "enviar cotización"
-    # sin una solicitud nueva de producto.
     if "cotizacion" in text:
         return True
 
-    # Respuestas cortas de continuación luego de una recomendación.
     if text in {
         "si",
         "sí",
@@ -219,16 +247,7 @@ def _format_selected_product(product: Dict[str, Any]) -> Dict[str, Any]:
     Normaliza el producto seleccionado usando el formateador oficial,
     pero sin perder campos si el producto ya viene normalizado.
 
-    Problema que evita:
-    - last_selected_product puede venir ya formateado desde memoria.
-    - formatear_producto() puede esperar estructura cruda de catálogo.
-    - Si se intenta reformatear un producto ya normalizado, puede devolver
-      campos vacíos.
-
-    Estrategia:
-    - Intenta formatear.
-    - Mezcla el resultado formateado con el original.
-    - Recupera defensivamente código, nombre, marca, precio y demás campos.
+    Evita que una card quede vacía durante continuidad comercial.
     """
     if not isinstance(product, dict):
         return {}
@@ -270,7 +289,6 @@ def _format_selected_product(product: Dict[str, Any]) -> Dict[str, Any]:
                 if not _has_value(merged.get(field)) and _has_value(original.get(field)):
                     merged[field] = original.get(field)
 
-            # Compatibilidad con campos crudos de catálogo.
             if not _has_value(merged.get("codigo")):
                 merged["codigo"] = (
                     original.get("CODIGO")
@@ -454,7 +472,6 @@ def _get_active_product_for_continuity(
 
     Orden correcto:
     1. Código explícito en el mensaje del usuario.
-       Este tiene máxima prioridad.
     2. last_selected_product.
     3. código en contexto / referencia / last_selected_product_code.
     """
@@ -527,7 +544,7 @@ def _product_delivery(product: Dict[str, Any]) -> str:
 
 
 # ============================================================
-# CONSTRUCCIÓN DE RESPUESTA
+# RESPUESTA DE INICIO DE COTIZACIÓN
 # ============================================================
 
 def build_commercial_continuity_response(
@@ -557,13 +574,6 @@ def build_commercial_continuity_response(
 
     codigo = _product_code(selected_product)
 
-    # --------------------------------------------------------
-    # Protección defensiva:
-    # Si el producto activo quedó sin código después del formateo,
-    # intentamos recuperarlo nuevamente desde el código guardado
-    # en contexto / last_selected_product_code.
-    #
-    # --------------------------------------------------------
     if not codigo:
         recovered_product = _recover_product_from_context_code(session)
 
@@ -571,24 +581,11 @@ def build_commercial_continuity_response(
             selected_product = _format_selected_product(recovered_product)
             codigo = _product_code(selected_product)
 
-    # Si aun así no hay código, no devolvemos una card vacía.
     if not codigo:
         return None
 
-    # --------------------------------------------------------
-    # Persistimos el producto activo en sesión.
-    # Esto ayuda a que el state engine calcule correctamente
-    # si ya existe producto para cotización.
-    # --------------------------------------------------------
     session["last_selected_product"] = selected_product
     session["last_selected_product_code"] = codigo
-
-    # --------------------------------------------------------
-    # Estado interno actual de NIA.
-    # Este estado será traducido por commercial_state_engine.py
-    # hacia el estado oficial del Commercial Spine:
-    # cotizacion_en_proceso -> preparar_cotizacion
-    # --------------------------------------------------------
     session["estado_negociacion"] = "cotizacion_en_proceso"
 
     update_commercial_process_state(
@@ -612,10 +609,7 @@ def build_commercial_continuity_response(
         "compatible_count": 1,
         "requires_customer_data": True,
 
-        # Estado interno
         "estado_negociacion": session.get("estado_negociacion"),
-
-        # Estado oficial del Commercial Spine
         "commercial_process_id": session.get("commercial_process_id"),
         "commercial_process_state": session.get("commercial_process_state"),
         "ultimo_paso": session.get("ultimo_paso"),
@@ -629,7 +623,7 @@ def build_commercial_continuity_response(
 
 
 # ============================================================
-# CAPTURA DE DATOS COMERCIALES
+# CAPTURA CONTEXTUAL DE DATOS COMERCIALES
 # ============================================================
 
 def _is_waiting_for_commercial_customer_data(session: Dict[str, Any]) -> bool:
@@ -698,12 +692,652 @@ def _is_waiting_for_commercial_customer_data(session: Dict[str, Any]) -> bool:
         ):
             return True
 
-    selected_product = get_last_selected_product(session)
-
-    if selected_product and estado_negociacion:
-        return True
 
     return False
+
+
+def _get_current_missing_quote_fields(session: Dict[str, Any]) -> List[str]:
+    """
+    Calcula datos faltantes actuales usando commercial_data de sesión.
+    """
+    current_data = get_commercial_data(session)
+    return get_missing_quote_fields(current_data)
+
+
+def _message_has_product_or_search_intent(message: str) -> bool:
+    """
+    Evita interpretar como nombre/empresa mensajes que parecen búsqueda de producto.
+    """
+    text = _normalize(message)
+
+    product_words = {
+        "sensor",
+        "sensores",
+        "motor",
+        "motores",
+        "variador",
+        "variadores",
+        "plc",
+        "rele",
+        "relé",
+        "valvula",
+        "válvula",
+        "torquimetro",
+        "torquímetro",
+        "precio",
+        "producto",
+        "cotizacion",
+        "cotización",
+        "referencia",
+        "codigo",
+        "código",
+        "marca",
+        "siemens",
+        "lutron",
+        "autonics",
+        "weg",
+        "schneider",
+        "abb",
+        "omron",
+        "delta",
+    }
+
+    return any(word in text.split() or word in text for word in product_words)
+
+
+def _is_meta_commercial_reply(message: str) -> bool:
+    """
+    Detecta mensajes donde el usuario se queja/corrige,
+    pero no entrega el dato exacto.
+
+    Estos mensajes NO deben caer a búsqueda de productos.
+    """
+    text = _normalize(message)
+
+    meta_patterns = [
+        "te estoy dando mi nombre",
+        "te di mi nombre",
+        "ya te dije mi nombre",
+        "ya te di mi nombre",
+        "ese es mi nombre",
+        "es mi nombre",
+        "te estoy dando la empresa",
+        "te di la empresa",
+        "ya te dije la empresa",
+        "ya te di la empresa",
+        "esa es la empresa",
+        "es la empresa",
+        "te estoy dando el correo",
+        "te di el correo",
+        "ya te dije el correo",
+        "ya te di el correo",
+        "ese es mi correo",
+        "te estoy dando mi telefono",
+        "te di mi telefono",
+        "ya te dije mi telefono",
+        "ya te di mi telefono",
+        "ese es mi telefono",
+        "ya te lo dije",
+        "ya te lo di",
+        "ya lo dije",
+        "ya lo di",
+        "te lo acabo de decir",
+        "ya te pase eso",
+        "ya te pasé eso",
+    ]
+
+    return any(pattern in text for pattern in meta_patterns)
+
+
+def _clean_short_value(message: str) -> str:
+    """
+    Limpia respuestas cortas tipo:
+    - "Luisa"
+    - "Industrias ABC"
+    - "Se llama Industrias ABC"
+    - "Es Industrias ABC"
+    """
+    raw = _safe_str(message)
+
+    raw = re.sub(
+        r"^(?:se llama|es|la llaman|se denomina|nombre|empresa)\s*[:\-]?\s+",
+        "",
+        raw,
+        flags=re.IGNORECASE,
+    )
+
+    raw = re.sub(
+        r"^(?:mi nombre es|me llamo|soy|mi empresa es|la empresa es|la empresa se llama)\s+",
+        "",
+        raw,
+        flags=re.IGNORECASE,
+    )
+
+    raw = re.split(
+        r"\s+(?:mi correo|correo|email|e-mail|telefono|teléfono|celular|mi numero|mi número)\b",
+        raw,
+        flags=re.IGNORECASE,
+    )[0]
+
+    return _safe_str(raw.strip(" .,:;|-"))
+
+
+def _looks_like_person_name_short_answer(message: str) -> bool:
+    """
+    Decide si un mensaje corto puede ser nombre de persona.
+
+    Solo se usa cuando NIA ya está esperando datos comerciales.
+
+    Importante:
+    No debe confundir nombres como "Luisa" con empresa solo porque
+    contienen letras como "sa".
+    """
+    value = _clean_short_value(message)
+    text = _normalize(value)
+
+    if not value or not text:
+        return False
+
+    if _is_meta_commercial_reply(message):
+        return False
+
+    if _message_has_product_or_search_intent(message):
+        return False
+
+    if re.search(r"\d", value):
+        return False
+
+    words = value.split()
+
+    if not (1 <= len(words) <= 5):
+        return False
+
+    blocked = {
+        "si",
+        "sí",
+        "no",
+        "ok",
+        "listo",
+        "dale",
+        "gracias",
+        "empresa",
+        "correo",
+        "telefono",
+        "teléfono",
+        "cotizacion",
+        "cotización",
+    }
+
+    if text in blocked:
+        return False
+
+    # Marcadores empresariales largos.
+    # Estos sí pueden aparecer dentro de una razón social.
+    long_company_markers = {
+        "industria",
+        "industrias",
+        "industrial",
+        "constructora",
+        "ferreteria",
+        "ferretería",
+        "comercializadora",
+        "distribuciones",
+        "servicios",
+        "soluciones",
+        "ingenieria",
+        "ingeniería",
+        "taller",
+        "corporacion",
+        "corporación",
+        "grupo",
+        "compañia",
+        "compania",
+        "company",
+    }
+
+    if any(marker in text for marker in long_company_markers):
+        return False
+
+    # Marcadores empresariales cortos.
+    # Deben validarse como palabra completa, no como substring.
+    # Ejemplo:
+    # - "ABC SA" sí es empresa.
+    # - "Luisa" NO debe fallar por contener "sa".
+    short_company_markers = {
+        "sa",
+        "s.a",
+        "sas",
+        "s.a.s",
+        "ltda",
+        "limitada",
+    }
+
+    text_tokens = set(text.replace(".", " ").split())
+
+    if text in short_company_markers:
+        return False
+
+    if any(marker in text_tokens for marker in short_company_markers):
+        return False
+
+    return bool(re.fullmatch(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,80}", value))
+
+
+def _looks_like_company_short_answer(message: str) -> bool:
+    """
+    Decide si un mensaje corto puede ser empresa.
+
+    Solo se usa cuando NIA ya está esperando empresa.
+
+    Regla importante:
+    Una sola palabra como "Luisa", "Carlos" o "Andrea" NO debe
+    considerarse empresa.
+
+    Además, dos palabras tipo "Luis Diaz" tampoco deben considerarse
+    empresa si no tienen señales empresariales claras.
+    """
+    value = _clean_short_value(message)
+    text = _normalize(value)
+
+    if not value or not text:
+        return False
+
+    if _is_meta_commercial_reply(message):
+        return False
+
+    if _message_has_product_or_search_intent(message):
+        return False
+
+    words = value.split()
+
+    if not (1 <= len(words) <= 8):
+        return False
+
+    if re.search(r"@", value):
+        return False
+
+    if re.fullmatch(r"\+?\d[\d\s().-]{6,}\d", value):
+        return False
+
+    # Una sola palabra no se considera empresa.
+    if len(words) == 1:
+        return False
+
+    long_company_markers = [
+        "industria",
+        "industrias",
+        "industrial",
+        "constructora",
+        "ferreteria",
+        "ferretería",
+        "comercializadora",
+        "distribuciones",
+        "distribuidora",
+        "servicios",
+        "soluciones",
+        "ingenieria",
+        "ingeniería",
+        "taller",
+        "corporacion",
+        "corporación",
+        "grupo",
+        "compañia",
+        "compania",
+        "company",
+        "empresa",
+    ]
+
+    if any(marker in text for marker in long_company_markers):
+        return True
+
+    # Marcadores legales: deben ser palabra completa.
+    short_company_markers = {
+        "sa",
+        "sas",
+        "ltda",
+        "limitada",
+    }
+
+    normalized_tokens = set(
+        token.strip(".").lower()
+        for token in re.split(r"\s+", value)
+        if token.strip()
+    )
+
+    dotted_legal_markers = {
+        "s.a",
+        "s.a.",
+        "s.a.s",
+        "s.a.s.",
+    }
+
+    if any(marker in normalized_tokens for marker in short_company_markers):
+        return True
+
+    if any(marker in text for marker in dotted_legal_markers):
+        return True
+
+    # Acrónimo empresarial en mayúsculas.
+    # Ejemplos:
+    # - ABC
+    # - VIA
+    # - XYZ
+    #
+    # Esto permite "ABC Industrial" o "Servicios ABC".
+    uppercase_tokens = [
+        token.strip(".,;:-")
+        for token in value.split()
+        if token.strip(".,;:-").isupper()
+        and len(token.strip(".,;:-")) >= 2
+    ]
+
+    if uppercase_tokens:
+        return True
+
+    # Si no hay ninguna señal empresarial clara, no inferimos empresa.
+    # Preferimos pedir aclaración antes que inventar.
+    return False
+
+
+def _extract_contact_from_short_answer(message: str) -> Dict[str, Any]:
+    """
+    Extrae correo o teléfono desde respuesta corta.
+    Reutiliza el extractor principal para no duplicar reglas.
+    """
+    data = extract_commercial_data(message)
+
+    return {
+        "correo": data.get("correo"),
+        "telefono": data.get("telefono"),
+    }
+
+
+def _infer_commercial_data_from_context(
+    session: Dict[str, Any],
+    message: str,
+    incoming_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Inferencia contextual de datos comerciales.
+
+    Esta función es la capa clave de conversación natural.
+
+    Regla principal:
+    - Si falta nombre y el mensaje parece nombre corto, NOMBRE manda por encima
+      de cualquier dato ambiguo detectado por el extractor.
+    - Si ya hay nombre y falta empresa, una respuesta corta tipo
+      "Industrias ABC" se interpreta como empresa.
+    - Si viene correo o teléfono, se conserva como contacto.
+    """
+    inferred = dict(incoming_data or _empty_commercial_data())
+
+    current_data = get_commercial_data(session)
+    missing = get_missing_quote_fields(current_data)
+
+    if not missing:
+        return inferred
+
+    clean_value = _clean_short_value(message)
+    normalized = _normalize(message)
+
+    # --------------------------------------------------------
+    # 1. Contacto explícito: correo/teléfono siempre se respeta.
+    # --------------------------------------------------------
+    contact_data = _extract_contact_from_short_answer(message)
+
+    if "correo o teléfono" in missing:
+        if _has_value(contact_data.get("correo")):
+            inferred["correo"] = contact_data["correo"]
+
+        if _has_value(contact_data.get("telefono")):
+            inferred["telefono"] = contact_data["telefono"]
+
+    # Si el mensaje trajo contacto explícito, retornamos.
+    # Ejemplo:
+    # - "luisa@abc.com"
+    # - "3001234567"
+    if _has_value(inferred.get("correo")) or _has_value(inferred.get("telefono")):
+        return inferred
+
+    # --------------------------------------------------------
+    # 2. Mensajes meta/corrección.
+    # No deben llenar datos ni caer al buscador.
+    # Otra función hará la aclaración.
+    # --------------------------------------------------------
+    if _is_meta_commercial_reply(message):
+        return _empty_commercial_data()
+
+    # --------------------------------------------------------
+    # 3. PRIORIDAD MÁXIMA: si falta nombre y el mensaje parece
+    # nombre corto, se guarda como nombre aunque el extractor
+    # lo haya clasificado como empresa.
+    #
+    # Este bloque corrige:
+    # "Luisa" -> nombre_cliente = "Luisa"
+    # NO empresa = "Luisa"
+    # --------------------------------------------------------
+    if "nombre" in missing and _looks_like_person_name_short_answer(message):
+        return {
+            "nombre_cliente": _title_safe(clean_value),
+            "empresa": None,
+            "correo": None,
+            "telefono": None,
+            "cantidad": None,
+            "presupuesto_aproximado": None,
+            "fecha_estimada_compra": None,
+        }
+
+    # --------------------------------------------------------
+    # 4. Mensajes con marcador "se llama / es / se denomina".
+    # Se interpretan según el slot faltante.
+    # --------------------------------------------------------
+    has_name_marker = (
+        normalized.startswith("se llama")
+        or normalized.startswith("es ")
+        or normalized.startswith("la llaman")
+        or normalized.startswith("se denomina")
+    )
+
+    if has_name_marker:
+        if "empresa" in missing and _looks_like_company_short_answer(message):
+            return {
+                "nombre_cliente": None,
+                "empresa": _title_safe(clean_value),
+                "correo": None,
+                "telefono": None,
+                "cantidad": None,
+                "presupuesto_aproximado": None,
+                "fecha_estimada_compra": None,
+            }
+
+        if "nombre" in missing and _looks_like_person_name_short_answer(message):
+            return {
+                "nombre_cliente": _title_safe(clean_value),
+                "empresa": None,
+                "correo": None,
+                "telefono": None,
+                "cantidad": None,
+                "presupuesto_aproximado": None,
+                "fecha_estimada_compra": None,
+            }
+
+    # --------------------------------------------------------
+    # 5. Si falta empresa y el mensaje parece empresa corta,
+    # se guarda como empresa.
+    #
+    # Esto ocurre normalmente después de que ya tenemos nombre:
+    # "Industrias ABC" -> empresa
+    # --------------------------------------------------------
+    if "empresa" in missing and _looks_like_company_short_answer(message):
+        return {
+            "nombre_cliente": None,
+            "empresa": _title_safe(clean_value),
+            "correo": None,
+            "telefono": None,
+            "cantidad": None,
+            "presupuesto_aproximado": None,
+            "fecha_estimada_compra": None,
+        }
+
+    # --------------------------------------------------------
+    # 6. Si no se pudo inferir de forma segura, devolvemos los
+    # datos originales del extractor. Esto permite conservar
+    # casos explícitos como:
+    # - "Me llamo Carlos"
+    # - "Mi empresa es Industrias ABC"
+    # --------------------------------------------------------
+    return inferred
+
+
+def _focus_missing_field_from_message_or_session(
+    session: Dict[str, Any],
+    message: str,
+) -> str:
+    """
+    Decide qué dato debe aclarar NIA cuando el usuario responde de forma meta
+    o ambigua.
+    """
+    text = _normalize(message)
+    current_data = get_commercial_data(session)
+    missing = get_missing_quote_fields(current_data)
+
+    if "nombre" in text:
+        return "nombre"
+
+    if "empresa" in text or "compania" in text or "compañia" in text:
+        return "empresa"
+
+    if "correo" in text or "email" in text or "mail" in text:
+        return "correo o teléfono"
+
+    if "telefono" in text or "teléfono" in text or "celular" in text or "numero" in text or "número" in text:
+        return "correo o teléfono"
+
+    if "nombre" in missing:
+        return "nombre"
+
+    if "empresa" in missing:
+        return "empresa"
+
+    if "correo o teléfono" in missing:
+        return "correo o teléfono"
+
+    return ""
+
+
+def _build_contextual_clarification_response(
+    session: Dict[str, Any],
+    message: str,
+    detected_intent: str,
+) -> Dict[str, Any]:
+    """
+    Respuesta segura cuando NIA está esperando datos comerciales,
+    pero el mensaje no trae un dato claro.
+
+    Importante:
+    No deja caer el mensaje a búsqueda de productos.
+    """
+    current_data = get_commercial_data(session)
+    missing = get_missing_quote_fields(current_data)
+    focus = _focus_missing_field_from_message_or_session(session, message)
+
+    if missing:
+        session["estado_negociacion"] = "datos_cotizacion_parciales"
+
+    update_commercial_process_state(
+        session=session,
+        detected_intent=detected_intent,
+    )
+
+    name = current_data.get("nombre_cliente")
+    prefix = f"Entiendo, {name}." if name else "Entiendo."
+
+    if focus == "nombre":
+        response = (
+            f"{prefix} Para evitar confusión, "
+            "¿me confirmas tu nombre exactamente?"
+        )
+    elif focus == "empresa":
+        response = (
+            f"{prefix} ¿Me confirmas el nombre de la empresa?"
+        )
+    elif focus == "correo o teléfono":
+        response = (
+            f"{prefix} ¿Me confirmas un correo o teléfono de contacto?"
+        )
+    else:
+        response = (
+            f"{prefix} Para continuar con la cotización, "
+            "¿me confirmas nombre, empresa y correo o teléfono?"
+        )
+
+    selected_product = get_last_selected_product(session)
+
+    if selected_product:
+        selected_product = _format_selected_product(selected_product)
+
+    cards = [selected_product] if selected_product and _product_code(selected_product) else []
+    results = [selected_product] if selected_product and _product_code(selected_product) else []
+
+    return {
+        "intent": detected_intent,
+        "response": response,
+        "needs_clarification": True,
+        "context": session.get("context", {}),
+        "session_id": session.get("session_id"),
+        "decision_reason": "commercial_contextual_clarification",
+        "compatible_count": len(results),
+        "requires_customer_data": True,
+
+        "commercial_data": current_data,
+
+        "estado_negociacion": session.get("estado_negociacion"),
+        "commercial_process_id": session.get("commercial_process_id"),
+        "commercial_process_state": session.get("commercial_process_state"),
+        "ultimo_paso": session.get("ultimo_paso"),
+        "siguiente_paso": session.get("siguiente_paso"),
+        "datos_faltantes": session.get("datos_faltantes"),
+        "intencion_actual": session.get("intencion_actual"),
+
+        "cards": cards,
+        "results": results,
+    }
+
+
+def _normalize_selected_product_in_session(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Normaliza y conserva el producto activo dentro de la sesión.
+    """
+    selected_product = get_last_selected_product(session)
+
+    if selected_product:
+        selected_product = _format_selected_product(selected_product)
+        selected_code = _product_code(selected_product)
+
+        if not selected_code:
+            recovered_product = _recover_product_from_context_code(session)
+
+            if recovered_product:
+                selected_product = _format_selected_product(recovered_product)
+                selected_code = _product_code(selected_product)
+
+        if selected_code:
+            session["last_selected_product"] = selected_product
+            session["last_selected_product_code"] = selected_code
+            return selected_product
+
+    recovered_product = _recover_product_from_context_code(session)
+
+    if recovered_product:
+        selected_product = _format_selected_product(recovered_product)
+        selected_code = _product_code(selected_product)
+
+        if selected_code:
+            session["last_selected_product"] = selected_product
+            session["last_selected_product_code"] = selected_code
+            return selected_product
+
+    return None
 
 
 def build_commercial_data_capture_response(
@@ -713,22 +1347,66 @@ def build_commercial_data_capture_response(
 ) -> Optional[Dict[str, Any]]:
     """
     Captura datos comerciales cuando ya hay una cotización en proceso.
-    Además conecta el estado interno con el Commercial Spine:
-    datos_cotizacion_parciales -> pedir_datos_faltantes_cotizacion
-    datos_cotizacion_recibidos -> cotizacion_lista_para_asesor
+
+    Cambio clave:
+    Antes, si extract_commercial_data() no encontraba datos explícitos,
+    el flujo retornaba None y el mensaje caía al buscador.
+
+    Ahora:
+    - Primero verificamos si NIA está esperando datos comerciales.
+    - Luego extraemos datos explícitos.
+    - Si no hay datos explícitos, inferimos por contexto.
+    - Si sigue ambiguo, respondemos pidiendo el dato faltante.
+    - Nunca dejamos caer respuestas comerciales cortas a búsqueda de producto.
     """
     if not isinstance(session, dict):
         return None
 
     incoming_data = extract_commercial_data(message)
 
-    # Si el mensaje no trae datos comerciales claros, no interceptamos.
-    if not has_any_commercial_data(incoming_data):
+    # --------------------------------------------------------
+    # Si el usuario está pidiendo cotización del producto activo,
+    # este mensaje debe pasar a build_commercial_continuity_response().
+    #
+    # No debe ser tratado como captura de datos comerciales.
+    # --------------------------------------------------------
+    if (
+        is_commercial_continuation_message(message)
+        and not has_any_commercial_data(incoming_data)
+    ):
         return None
 
-    # Solo capturamos datos si el hilo realmente está esperando datos comerciales.
+    # Primero validamos contexto comercial real.
+    # Solo capturamos respuestas cortas si NIA ya inició cotización
+    # o está esperando datos faltantes.
     if not _is_waiting_for_commercial_customer_data(session):
         return None
+
+    # Si el usuario está en flujo comercial y responde algo meta,
+    # no lo mandamos al buscador.
+    if not has_any_commercial_data(incoming_data) and _is_meta_commercial_reply(message):
+        return _build_contextual_clarification_response(
+            session=session,
+            message=message,
+            detected_intent=detected_intent,
+        )
+
+    # Inferencia contextual para respuestas cortas:
+    # "Luisa", "Industrias ABC", "Se llama Industrias ABC", etc.
+    incoming_data = _infer_commercial_data_from_context(
+        session=session,
+        message=message,
+        incoming_data=incoming_data,
+    )
+
+    # Si aun así no tenemos datos, respondemos dentro del flujo comercial.
+    # No dejamos que vaya al buscador.
+    if not has_any_commercial_data(incoming_data):
+        return _build_contextual_clarification_response(
+            session=session,
+            message=message,
+            detected_intent=detected_intent,
+        )
 
     current_data = get_commercial_data(session)
     merged_data = merge_commercial_data(current_data, incoming_data)
@@ -742,34 +1420,7 @@ def build_commercial_data_capture_response(
     else:
         session["estado_negociacion"] = "datos_cotizacion_recibidos"
 
-    selected_product = get_last_selected_product(session)
-
-    # Si el producto activo viene incompleto, intentamos recuperarlo por código.
-    if selected_product:
-        selected_product = _format_selected_product(selected_product)
-
-        selected_code = _product_code(selected_product)
-
-        if not selected_code:
-            recovered_product = _recover_product_from_context_code(session)
-
-            if recovered_product:
-                selected_product = _format_selected_product(recovered_product)
-                selected_code = _product_code(selected_product)
-
-        if selected_code:
-            session["last_selected_product"] = selected_product
-            session["last_selected_product_code"] = selected_code
-    else:
-        recovered_product = _recover_product_from_context_code(session)
-
-        if recovered_product:
-            selected_product = _format_selected_product(recovered_product)
-            selected_code = _product_code(selected_product)
-
-            if selected_code:
-                session["last_selected_product"] = selected_product
-                session["last_selected_product_code"] = selected_code
+    selected_product = _normalize_selected_product_in_session(session)
 
     update_commercial_process_state(
         session=session,
@@ -791,13 +1442,9 @@ def build_commercial_data_capture_response(
         "compatible_count": len(results),
         "requires_customer_data": bool(missing),
 
-        # Datos comerciales capturados
         "commercial_data": merged_data,
 
-        # Estado interno
         "estado_negociacion": session.get("estado_negociacion"),
-
-        # Estado oficial del Commercial Spine
         "commercial_process_id": session.get("commercial_process_id"),
         "commercial_process_state": session.get("commercial_process_state"),
         "ultimo_paso": session.get("ultimo_paso"),
