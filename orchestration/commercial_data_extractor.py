@@ -76,6 +76,10 @@ def clean_value(value: Any) -> str:
 def title_safe(value: str) -> str:
     """
     Da formato legible sin forzar demasiado.
+
+    Nota:
+    Por ahora usamos capitalize por palabra. Esto convierte ABC -> Abc.
+    Más adelante podemos mejorar preservación de siglas.
     """
     value = clean_value(value)
 
@@ -96,6 +100,226 @@ def has_any_commercial_data(data: Dict[str, Any]) -> bool:
         data.get(key) not in [None, "", [], {}]
         for key in COMMERCIAL_DATA_KEYS
     )
+
+
+def _cut_at_stop_words(value: str) -> str:
+    """
+    Corta un valor cuando empiezan otros datos o frases que no pertenecen
+    al campo capturado.
+
+    Sirve para:
+    - nombres
+    - empresas
+    - presupuestos
+    """
+    value = clean_value(value)
+
+    if not value:
+        return ""
+
+    parts = re.split(
+        r"\s+(?:"
+        r"y\s+mi\s+correo|"
+        r"mi\s+correo|"
+        r"correo|"
+        r"email|"
+        r"e-mail|"
+        r"mail|"
+        r"mi\s+telefono|"
+        r"mi\s+tel[eé]fono|"
+        r"telefono|"
+        r"tel[eé]fono|"
+        r"celular|"
+        r"mi\s+celular|"
+        r"mi\s+numero|"
+        r"mi\s+n[uú]mero|"
+        r"numero|"
+        r"n[uú]mero|"
+        r"cantidad|"
+        r"presupuesto|"
+        r"para\s+cotizar|"
+        r"para\s+la\s+cotizaci[oó]n|"
+        r"para\s+continuar|"
+        r"gracias"
+        r")\b",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    return clean_value(parts[0] if parts else value)
+
+
+def _looks_like_company(value: str) -> bool:
+    """
+    Heurística suave para validar que un texto pueda ser empresa.
+
+    No exige que tenga SAS/LTDA, porque muchas empresas reales se escriben como:
+    - Industrias ABC
+    - Taller El Norte
+    - Ferretería Mundial
+    - Constructora Los Andes
+    """
+    value = clean_value(value)
+
+    if not value:
+        return False
+
+    words = value.split()
+
+    if len(words) > 8:
+        return False
+
+    # Evita capturar textos demasiado genéricos.
+    normalized = normalize_text(value)
+
+    blocked = {
+        "si",
+        "no",
+        "ok",
+        "listo",
+        "gracias",
+        "empresa",
+        "la empresa",
+        "mi empresa",
+        "correo",
+        "telefono",
+        "cotizacion",
+        "producto",
+    }
+
+    if normalized in blocked:
+        return False
+
+    return True
+
+
+def _extract_company_after_marker(raw: str) -> str:
+    """
+    Extrae empresa usando marcadores explícitos.
+
+    Soporta frases naturales como:
+    - "La empresa es Industrias ABC"
+    - "Mi empresa es Industrias ABC"
+    - "La empresa se llama Industrias ABC"
+    - "Se llama Industrias ABC" cuando el mensaje menciona empresa
+    - "Empresa: Industrias ABC"
+    - "De la empresa Industrias ABC"
+    - "Trabajo en Industrias ABC"
+    - "Laboro en Industrias ABC"
+    """
+    raw = str(raw or "")
+
+    # Marcadores muy explícitos.
+    patterns = [
+        r"\bempresa\s*[:\-]?\s*(?:es|se llama|llamada|nombre)?\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+        r"\bmi empresa\s*(?:es|se llama|llamada)?\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+        r"\bla empresa\s*(?:es|se llama|llamada)?\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+        r"\bde la empresa\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+        r"\bpara la empresa\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+        r"\btrabajo en\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+        r"\blaboro en\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+        r"\bsoy de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+        r"\bvengo de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+        r"\brepresento a\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+        r"\brepresento la empresa\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+        r"\bsomos\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, raw, flags=re.IGNORECASE)
+
+        if not match:
+            continue
+
+        company = _cut_at_stop_words(match.group(1))
+
+        # Caso especial:
+        # "Ya te dije la empresa. Se llama Industria ABC"
+        # El primer patrón puede capturar vacío o texto raro; lo limpiamos.
+        company = re.sub(
+            r"^(?:es|se llama|llamada)\s+",
+            "",
+            company,
+            flags=re.IGNORECASE,
+        )
+
+        company = clean_value(company)
+
+        if _looks_like_company(company):
+            return title_safe(company)
+
+    # Marcador "se llama X" solo si el mensaje menciona empresa.
+    normalized = normalize_text(raw)
+
+    if "empresa" in normalized or "compania" in normalized or "compañia" in normalized:
+        match = re.search(
+            r"\bse llama\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+            raw,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            company = _cut_at_stop_words(match.group(1))
+            company = clean_value(company)
+
+            if _looks_like_company(company):
+                return title_safe(company)
+
+    return ""
+
+
+def _extract_company_from_name_phrase(raw: str) -> str:
+    """
+    Extrae empresa en frases donde el usuario se presenta y agrega "de X".
+
+    Soporta:
+    - "Mi nombre es Luis Diaz de Industrias ABC y mi correo es..."
+    - "Me llamo Luis Diaz de Industrias ABC"
+    - "Soy Carlos de Industrias ABC"
+    - "Hablas con Laura de Industrias Norte"
+    - "Soy Luis, de Industrias ABC"
+    """
+    raw = str(raw or "")
+
+    patterns = [
+        # Mi nombre es Luis Diaz de Industrias ABC...
+        r"\bmi nombre es\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?\s+de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+
+        # Me llamo Luis Diaz de Industrias ABC...
+        r"\bme llamo\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?\s+de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+
+        # Soy Carlos de Industrias ABC...
+        r"\bsoy\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?\s+de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+
+        # Hablas con Laura de Industrias Norte...
+        r"\bhablas con\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?\s+de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+
+        # Te habla Laura de Industrias Norte...
+        r"\bte habla\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?\s+de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+
+        # Soy Luis, de Industrias ABC
+        r"\bsoy\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?,\s*de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+
+        # Mi nombre es Luis, de Industrias ABC
+        r"\bmi nombre es\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?,\s*de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+
+        # Me llamo Luis, de Industrias ABC
+        r"\bme llamo\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?,\s*de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_\-]{2,100})",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, raw, flags=re.IGNORECASE)
+
+        if not match:
+            continue
+
+        company = _cut_at_stop_words(match.group(1))
+        company = clean_value(company)
+
+        if _looks_like_company(company):
+            return title_safe(company)
+
+    return ""
 
 
 # ============================================================
@@ -159,7 +383,8 @@ def extract_quantity(message: str) -> str:
     text = normalize_text(message)
 
     patterns = [
-        r"\b(?:cantidad|cant\.?|necesito|requiero|quiero|serian|serían)\s*(?:de\s*)?(\d{1,4})\s*(?:und|unid|unidad|unidades|piezas|pz|pcs)?\b",
+        r"\b(?:cantidad|cant\.?|serian|serían)\s*(?:de\s*)?(\d{1,4})\s*(?:und|unid|unidad|unidades|piezas|pz|pcs)?\b",
+        r"\b(?:necesito|requiero|quiero)\s+(\d{1,4})\s*(?:und|unid|unidad|unidades|piezas|pz|pcs)\b",
         r"\b(\d{1,4})\s*(?:und|unid|unidad|unidades|piezas|pz|pcs)\b",
     ]
 
@@ -255,7 +480,15 @@ def extract_purchase_date(message: str) -> str:
 def extract_name(message: str) -> str:
     """
     Extrae nombre del cliente cuando viene explícito.
-    
+
+    Casos soportados:
+    - "Me llamo Andrea"
+    - "Mi nombre es Carlos"
+    - "Mi nombre es Luis Diaz de Industrias ABC"
+    - "Soy Carlos de Industrias ABC"
+    - "Soy Carlos, mi correo es..."
+    - "Nombre: Carlos"
+
     Regla importante:
     Si el usuario dice "Soy Carlos de Industrias ABC",
     el nombre debe quedar "Carlos", no "Carlos de Industrias ABC".
@@ -263,17 +496,23 @@ def extract_name(message: str) -> str:
     raw = str(message or "")
 
     patterns = [
-        # Mi nombre es Carlos ...
-        r"\bmi nombre es\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,50}?)(?=\s+de\s+|,|\.|$|\s+mi\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+|\s+empresa\s+)",
+        # Mi nombre es Luis Diaz de Industrias ABC...
+        r"\bmi nombre es\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?)(?=\s+de\s+|,|\.|$|\s+y\s+mi\s+|\s+mi\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+|\s+empresa\s+)",
 
-        # Me llamo Andrea ...
-        r"\bme llamo\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,50}?)(?=\s+de\s+|,|\.|$|\s+mi\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+|\s+empresa\s+)",
+        # Me llamo Andrea...
+        r"\bme llamo\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?)(?=\s+de\s+|,|\.|$|\s+y\s+mi\s+|\s+mi\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+|\s+empresa\s+)",
 
-        # Soy Carlos de Industrias ABC
-        r"\bsoy\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,40}?)(?=\s+de\s+|,|\.|$|\s+mi\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+|\s+empresa\s+)",
+        # Soy Carlos de Industrias ABC...
+        r"\bsoy\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?)(?=\s+de\s+|,|\.|$|\s+y\s+mi\s+|\s+mi\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+|\s+empresa\s+)",
+
+        # Hablas con Laura...
+        r"\bhablas con\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?)(?=\s+de\s+|,|\.|$|\s+y\s+mi\s+|\s+mi\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+|\s+empresa\s+)",
+
+        # Te habla Laura...
+        r"\bte habla\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?)(?=\s+de\s+|,|\.|$|\s+y\s+mi\s+|\s+mi\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+|\s+empresa\s+)",
 
         # Nombre: Carlos
-        r"\bnombre\s*[:\-]?\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,50}?)(?=,|\.|$|\s+empresa\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+)",
+        r"\bnombre\s*[:\-]?\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,60}?)(?=,|\.|$|\s+empresa\s+|\s+correo\s+|\s+tel[eé]fono\s+|\s+celular\s+)",
     ]
 
     for pattern in patterns:
@@ -292,7 +531,7 @@ def extract_name(message: str) -> str:
             name = clean_value(name)
 
             # Evita guardar frases largas como nombre.
-            if name and len(name.split()) <= 4:
+            if name and len(name.split()) <= 5:
                 return title_safe(name)
 
     return ""
@@ -301,39 +540,40 @@ def extract_name(message: str) -> str:
 def extract_company(message: str) -> str:
     """
     Extrae empresa cuando viene con señales claras.
+
+    Casos soportados:
+    - "Soy Carlos de Industrias ABC"
+    - "Mi nombre es Luis Diaz de Industrias ABC y mi correo es..."
+    - "Me llamo Laura de Industrias Norte"
+    - "Trabajo en Industrias ABC"
+    - "Laboro en Industrias ABC"
+    - "Empresa: Industrias ABC"
+    - "Mi empresa es Industrias ABC"
+    - "La empresa es Industrias ABC"
+    - "La empresa se llama Industrias ABC"
+    - "Ya te dije la empresa. Se llama Industria ABC"
+    - "Represento a Industrias ABC"
+    - "Somos Industrias ABC"
+
     Regla:
     La empresa se corta antes de correo, teléfono u otros datos.
     """
     raw = str(message or "")
 
-    patterns = [
-        r"\bempresa\s*[:\-]?\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_-]{2,80})",
-        r"\bde la empresa\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_-]{2,80})",
-        r"\btrabajo en\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_-]{2,80})",
+    # 1. Primero intentamos con marcadores explícitos de empresa.
+    company = _extract_company_after_marker(raw)
 
-        # Soy Carlos de Industrias ABC
-        r"\bsoy\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{2,40}?\s+de\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9 .&_-]{2,80})",
-    ]
+    if company:
+        return company
 
-    for pattern in patterns:
-        match = re.search(pattern, raw, flags=re.IGNORECASE)
+    # 2. Luego intentamos extraer empresa en frases de presentación personal.
+    company = _extract_company_from_name_phrase(raw)
 
-        if match:
-            company = clean_value(match.group(1))
-
-            # Corta cuando empiezan otros datos comerciales.
-            company = re.split(
-                r"\s+(?:mi correo|correo|email|e-mail|telefono|teléfono|celular|mi numero|mi número|cantidad|presupuesto)\b",
-                company,
-                flags=re.IGNORECASE,
-            )[0]
-
-            company = clean_value(company)
-
-            if company:
-                return title_safe(company)
+    if company:
+        return company
 
     return ""
+
 
 # ============================================================
 # EXTRACTOR PRINCIPAL
