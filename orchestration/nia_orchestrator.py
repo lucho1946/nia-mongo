@@ -86,6 +86,7 @@ from knowledge.document_policy import (
 from orchestration.commercial_continuity import (
     build_commercial_continuity_response,
     build_commercial_data_capture_response,
+    build_commercial_quote_followup_response,
 )
 
 
@@ -1577,7 +1578,32 @@ def process_message(
             commercial_data_response,
             nia_os_context,
         )
-        
+    
+    # --------------------------------------------------------
+    # 3.2.2 Seguimiento de cotización enviada / recibida
+    # --------------------------------------------------------
+    # NIA debe continuar en seguimiento, no iniciar una nueva cotización.
+    # --------------------------------------------------------
+    commercial_quote_followup_response = build_commercial_quote_followup_response(
+        session=session,
+        message=message,
+        detected_intent=detected_intent,
+    )
+
+    if commercial_quote_followup_response:
+        clear_last_assistant_question(session)
+
+        append_assistant_message(
+            session,
+            commercial_quote_followup_response.get("response", ""),
+        )
+
+        save_session(session)
+
+        return _attach_nia_os_metadata(
+            commercial_quote_followup_response,
+            nia_os_context,
+        )    
         
     # --------------------------------------------------------
     # 3.3. Continuidad comercial con último producto seleccionado

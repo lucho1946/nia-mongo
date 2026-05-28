@@ -132,6 +132,124 @@ def _merge_inferred_data(base: Dict[str, Any], inferred: Dict[str, Any]) -> Dict
 
     return merged
 
+# ============================================================
+# SEGUIMIENTO DE COTIZACIÓN ENVIADA / RECIBIDA
+# ============================================================
+# Esta lista cubre frases naturales donde el cliente NO está
+# pidiendo iniciar una cotización nueva, sino hablando de una
+# cotización que ya fue enviada, recibida o revisada.
+#
+# Alineación Commercial Spine:
+# - seguimiento
+# - validando_cumplimiento
+# - siguiente paso comercial claro
+# ============================================================
+
+QUOTE_FOLLOWUP_PHRASES = [
+    # Cotización enviada
+    "ya me enviaron la cotizacion",
+    "ya me enviaron la cotización",
+    "ya me mandaron la cotizacion",
+    "ya me mandaron la cotización",
+    "ya me compartieron la cotizacion",
+    "ya me compartieron la cotización",
+    "ya me hicieron llegar la cotizacion",
+    "ya me hicieron llegar la cotización",
+    "ya me pasaron la cotizacion",
+    "ya me pasaron la cotización",
+    "ya me enviaron el documento",
+    "ya me mandaron el documento",
+    "ya me compartieron el documento",
+
+    # Cotización recibida
+    "ya recibi la cotizacion",
+    "ya recibí la cotización",
+    "ya tengo la cotizacion",
+    "ya tengo la cotización",
+    "ya me llego la cotizacion",
+    "ya me llegó la cotización",
+    "me llego la cotizacion",
+    "me llegó la cotización",
+    "recibi la cotizacion",
+    "recibí la cotización",
+    "tengo la cotizacion",
+    "tengo la cotización",
+    "me enviaron la cotizacion",
+    "me enviaron la cotización",
+    "me mandaron la cotizacion",
+    "me mandaron la cotización",
+
+    # Referencias anafóricas: "la" = cotización en contexto
+    "ya me la enviaron",
+    "ya me la mandaron",
+    "ya me la compartieron",
+    "ya me la pasaron",
+    "ya me llego",
+    "ya me llegó",
+    "ya la tengo",
+    "ya la recibi",
+    "ya la recibí",
+    "me la enviaron",
+    "me la mandaron",
+    "me la compartieron",
+    "me la pasaron",
+    "me llego",
+    "me llegó",
+
+    # Revisión
+    "ya revise la cotizacion",
+    "ya revisé la cotización",
+    "ya la revise",
+    "ya la revisé",
+    "estoy revisando la cotizacion",
+    "estoy revisando la cotización",
+    "estoy revisandola",
+    "estoy revisándola",
+    "la estoy revisando",
+    "voy a revisar la cotizacion",
+    "voy a revisar la cotización",
+    "voy a revisarla",
+
+    # Seguimiento
+    "quiero revisar la cotizacion",
+    "quiero revisar la cotización",
+    "quiero seguir con la cotizacion",
+    "quiero seguir con la cotización",
+    "sigamos con la cotizacion",
+    "sigamos con la cotización",
+    "continuemos con la cotizacion",
+    "continuemos con la cotización",
+    "retomemos la cotizacion",
+    "retomemos la cotización",
+    "sobre la cotizacion",
+    "sobre la cotización",
+    "respecto a la cotizacion",
+    "respecto a la cotización",
+
+    # Estado del asesor
+    "el asesor ya me envio la cotizacion",
+    "el asesor ya me envió la cotización",
+    "el asesor ya me la envio",
+    "el asesor ya me la envió",
+    "ventas ya me envio la cotizacion",
+    "ventas ya me envió la cotización",
+    "comercial ya me envio la cotizacion",
+    "comercial ya me envió la cotización",
+
+    # Ajustes posteriores
+    "quiero ajustar la cotizacion",
+    "quiero ajustar la cotización",
+    "necesito ajustar la cotizacion",
+    "necesito ajustar la cotización",
+    "quiero modificar la cotizacion",
+    "quiero modificar la cotización",
+    "hay que cambiar la cotizacion",
+    "hay que cambiar la cotización",
+    "tengo una duda de la cotizacion",
+    "tengo una duda de la cotización",
+    "tengo dudas de la cotizacion",
+    "tengo dudas de la cotización",
+]
 
 # ============================================================
 # DETECCIÓN DE CONTINUIDAD COMERCIAL
@@ -237,6 +355,147 @@ def is_commercial_continuation_message(message: str) -> bool:
 
     return False
 
+def is_commercial_quote_followup_message(message: str) -> bool:
+    """
+    Detecta si el cliente habla de una cotización ya enviada,
+    recibida, revisada o en seguimiento.
+
+    Importante:
+    Esto NO es iniciar una cotización nueva.
+    Esto corresponde al estado 'seguimiento' del Commercial Spine.
+    """
+    text = _normalize(message)
+
+    if not text:
+        return False
+
+    # Evita confundir solicitudes nuevas de cotización con seguimiento.
+    new_quote_patterns = [
+        "quiero cotizar",
+        "cotizar este producto",
+        "cotizar ese producto",
+        "solicitar cotizacion",
+        "solicitar cotización",
+        "generar cotizacion",
+        "generar cotización",
+        "enviame una cotizacion",
+        "envíame una cotización",
+        "mandame una cotizacion",
+        "mándame una cotización",
+        "hazme una cotizacion",
+        "hazme una cotización",
+    ]
+
+    if any(_normalize(pattern) in text for pattern in new_quote_patterns):
+        return False
+
+    if any(_normalize(phrase) in text for phrase in QUOTE_FOLLOWUP_PHRASES):
+        return True
+
+    # Patrones más flexibles.
+    if (
+        "cotizacion" in text
+        and any(
+            token in text
+            for token in [
+                "ya",
+                "recibi",
+                "recibida",
+                "enviaron",
+                "mandaron",
+                "llego",
+                "tengo",
+                "revise",
+                "revisando",
+                "seguimiento",
+                "ajustar",
+                "modificar",
+                "duda",
+                "dudas",
+            ]
+        )
+    ):
+        return True
+
+    # Frases sin la palabra cotización, pero muy claras si hay contexto.
+    anaphoric_patterns = [
+        "ya me la enviaron",
+        "ya me la mandaron",
+        "ya me llego",
+        "ya me llegó",
+        "ya la tengo",
+        "ya la recibi",
+        "ya la recibí",
+        "ya la revise",
+        "ya la revisé",
+        "la estoy revisando",
+    ]
+
+    return any(pattern in text for pattern in anaphoric_patterns)
+
+
+def build_commercial_quote_followup_response(
+    session: Dict[str, Any],
+    message: str,
+    detected_intent: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Responde cuando el cliente habla de una cotización ya enviada,
+    recibida o revisada.
+
+    Evita reiniciar la cotización y ubica el flujo en seguimiento.
+    """
+    if not isinstance(session, dict):
+        return None
+
+    if not is_commercial_quote_followup_message(message):
+        return None
+
+    selected_product = _normalize_selected_product_in_session(session)
+
+    session["estado_negociacion"] = "seguimiento_cotizacion"
+
+    update_commercial_process_state(
+        session=session,
+        detected_intent="seguimiento",
+    )
+
+    commercial_data = get_commercial_data(session)
+    name = commercial_data.get("nombre_cliente")
+
+    prefix = f"Perfecto, {name}." if name else "Perfecto."
+
+    response = (
+        f"{prefix} Entonces continuamos sobre la cotización enviada. "
+        "¿Quieres revisarla, ajustar algún dato o avanzar con el siguiente paso comercial?"
+    )
+
+    cards = [selected_product] if selected_product and _product_code(selected_product) else []
+    results = [selected_product] if selected_product and _product_code(selected_product) else []
+
+    return {
+        "intent": detected_intent,
+        "response": response,
+        "needs_clarification": True,
+        "context": session.get("context", {}),
+        "session_id": session.get("session_id"),
+        "decision_reason": "commercial_quote_followup",
+        "compatible_count": len(results),
+        "requires_customer_data": False,
+
+        "commercial_data": commercial_data,
+
+        "estado_negociacion": session.get("estado_negociacion"),
+        "commercial_process_id": session.get("commercial_process_id"),
+        "commercial_process_state": session.get("commercial_process_state"),
+        "ultimo_paso": session.get("ultimo_paso"),
+        "siguiente_paso": session.get("siguiente_paso"),
+        "datos_faltantes": session.get("datos_faltantes"),
+        "intencion_actual": session.get("intencion_actual"),
+
+        "cards": cards,
+        "results": results,
+    }
 
 # ============================================================
 # RECUPERACIÓN / NORMALIZACIÓN DE PRODUCTO
@@ -1363,6 +1622,15 @@ def build_commercial_data_capture_response(
         return None
 
     incoming_data = extract_commercial_data(message)
+    
+    # --------------------------------------------------------
+    # Si el cliente habla de una cotización ya enviada/recibida,
+    # este mensaje debe pasar al bloque de seguimiento.
+    # No debe tratarse como captura de datos ni como inicio
+    # de cotización nueva.
+    # --------------------------------------------------------
+    if is_commercial_quote_followup_message(message):
+        return None
 
     # --------------------------------------------------------
     # Si el usuario está pidiendo cotización del producto activo,

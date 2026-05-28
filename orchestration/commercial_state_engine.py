@@ -56,6 +56,11 @@ INTERNAL_TO_SPINE_STATE = {
     "datos_cotizacion_parciales": "pedir_datos_faltantes_cotizacion",
     "datos_cotizacion_recibidos": "cotizacion_lista_para_asesor",
     "datos_cotizacion_completos": "cotizacion_lista_para_asesor",
+    
+    # Seguimiento posterior a cotización enviada/recibida.
+    "seguimiento_cotizacion": "seguimiento",
+    "cotizacion_enviada": "seguimiento",
+    "cotizacion_recibida": "seguimiento",
 }
 
 
