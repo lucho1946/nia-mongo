@@ -815,8 +815,15 @@ def build_commercial_continuity_response(
     Si el mensaje es continuidad comercial y hay producto seleccionado,
     construye respuesta sin buscar productos nuevos.
 
-    Además conecta el estado interno de NIA con el Commercial Spine:
-    cotizacion_en_proceso -> preparar_cotizacion.
+    Conecta el estado interno de NIA con el Commercial Spine:
+
+    - cotizacion_en_proceso -> preparar_cotizacion
+    - datos_cotizacion_recibidos -> cotizacion_lista_para_asesor
+
+    Regla comercial Don Andrés:
+    Si el cliente viene por un canal con teléfono identificable
+    y no entrega datos adicionales, la cotización no se bloquea.
+    Se deja viable para enviarla al mismo número de contacto.
     """
     if not is_commercial_continuation_message(message):
         return None
@@ -843,30 +850,93 @@ def build_commercial_continuity_response(
     if not codigo:
         return None
 
+    # ------------------------------------------------------------
+    # Mantener producto activo en memoria.
+    # Esto permite que NIA continúe el flujo comercial sin buscar
+    # productos nuevos cuando el cliente dice "quiero cotizar".
+    # ------------------------------------------------------------
     session["last_selected_product"] = selected_product
     session["last_selected_product_code"] = codigo
-    session["estado_negociacion"] = "cotizacion_en_proceso"
 
+    # ------------------------------------------------------------
+    # Evaluar si existe teléfono del canal.
+    #
+    # Esto viene desde nia_orchestrator.py cuando cliente_id parece
+    # un número real, por ejemplo:
+    # - 573001234567
+    # - +573001234567
+    # - 3001234567
+    # ------------------------------------------------------------
+    commercial_data = get_commercial_data(session)
+
+    has_channel_phone = bool(
+        session.get("channel_contact_phone")
+        or session.get("commercial_contact_source") == "channel_phone"
+    )
+
+    has_contact = bool(
+        commercial_data.get("correo")
+        or commercial_data.get("telefono")
+        or session.get("channel_contact_phone")
+    )
+
+    # ------------------------------------------------------------
+    # Estado comercial correcto.
+    #
+    # Si hay teléfono del canal, producto y contacto, la cotización
+    # queda viable aunque falten nombre o empresa.
+    #
+    # Si no hay teléfono del canal, seguimos el flujo normal:
+    # pedir nombre, empresa, correo o teléfono.
+    # ------------------------------------------------------------
+    if has_channel_phone and has_contact:
+        session["estado_negociacion"] = "datos_cotizacion_recibidos"
+    else:
+        session["estado_negociacion"] = "cotizacion_en_proceso"
+
+    # ------------------------------------------------------------
+    # Actualizar Commercial Spine según estado interno.
+    #
+    # - datos_cotizacion_recibidos -> cotizacion_lista_para_asesor
+    # - cotizacion_en_proceso -> preparar_cotizacion
+    # ------------------------------------------------------------
     update_commercial_process_state(
         session=session,
         detected_intent=detected_intent,
     )
 
-    response = (
-        "Claro. Puedo ayudarte a iniciar la cotización del producto que quieres.\n\n"
-        "Para continuar con la cotización, ¿me confirmas nombre, empresa, "
-        "correo o teléfono de contacto?"
-    )
+    # ------------------------------------------------------------
+    # Respuesta al cliente.
+    #
+    # Si ya tenemos teléfono del canal, no bloqueamos ni pedimos
+    # obligatoriamente nombre/empresa/correo.
+    # ------------------------------------------------------------
+    if has_channel_phone and has_contact:
+        response = (
+            "Claro. Puedo dejar la cotización en proceso para enviarla "
+            "a este mismo número de contacto.\n\n"
+            "Si quieres, también puedes compartirme nombre o empresa "
+            "para dejarla más completa."
+        )
+    else:
+        response = (
+            "Claro. Puedo ayudarte a iniciar la cotización del producto que quieres.\n\n"
+            "Para continuar con la cotización, ¿me confirmas nombre, empresa, "
+            "correo o teléfono de contacto?"
+        )
+
+    cards = [selected_product] if selected_product and _product_code(selected_product) else []
+    results = [selected_product] if selected_product and _product_code(selected_product) else []
 
     return {
         "intent": detected_intent,
         "response": response,
-        "needs_clarification": True,
+        "needs_clarification": not (has_channel_phone and has_contact),
         "context": session.get("context", {}),
         "session_id": session.get("session_id"),
         "decision_reason": "commercial_continuity_last_selected_product",
-        "compatible_count": 1,
-        "requires_customer_data": True,
+        "compatible_count": len(results),
+        "requires_customer_data": not (has_channel_phone and has_contact),
 
         "estado_negociacion": session.get("estado_negociacion"),
         "commercial_process_id": session.get("commercial_process_id"),
@@ -876,8 +946,8 @@ def build_commercial_continuity_response(
         "datos_faltantes": session.get("datos_faltantes"),
         "intencion_actual": session.get("intencion_actual"),
 
-        "cards": [selected_product],
-        "results": [selected_product],
+        "cards": cards,
+        "results": results,
     }
 
 
