@@ -93,7 +93,9 @@ from orchestration.commercial_proforma import (
     build_commercial_proforma_response,
     build_commercial_proforma_data_capture_response,
 )
-
+from orchestration.commercial_state_engine import (
+    update_commercial_process_state,
+)
 
 # ============================================================
 # SESIONES
@@ -1877,11 +1879,62 @@ def process_message(
 
         if code_results:
             # Guarda el resultado como último producto seleccionado.
-            # Esto es clave para que luego frases como:
-            # "quiero cotizar este producto"
-            # "enviame la cotizacion"
-            # puedan usar el producto activo.
+            # Esto mantiene el producto activo en memoria para que NIA
+            # pueda continuar naturalmente con cotización, seguimiento
+            # o proforma sin pedir que el cliente repita el producto.
             save_last_results(session, code_results)
+
+            # ----------------------------------------------------
+            # Regla comercial:
+            # Cuando NIA encuentra un producto exacto, no debe
+            # esperar a que el cliente escriba "quiero cotizar".
+            #
+            # Debe avanzar naturalmente a cotización y pedir los
+            # datos comerciales mínimos.
+            # ----------------------------------------------------
+            commercial_data = session.setdefault("commercial_data", {})
+
+            has_channel_phone = bool(
+                session.get("channel_contact_phone")
+                or session.get("commercial_contact_source") == "channel_phone"
+            )
+
+            has_contact = bool(
+                commercial_data.get("correo")
+                or commercial_data.get("telefono")
+                or session.get("channel_contact_phone")
+            )
+
+            if has_channel_phone and has_contact:
+                # Si el canal ya trae teléfono, la cotización queda viable.
+                # No bloqueamos por falta de nombre, empresa o correo.
+                session["estado_negociacion"] = "datos_cotizacion_recibidos"
+
+                final_response["response"] = (
+                    f"{final_response.get('response', '')}\n\n"
+                    "Puedo dejar la cotización en proceso para enviarla "
+                    "a este mismo número de contacto. Si quieres, también "
+                    "puedes compartirme nombre o empresa para dejarla más completa."
+                )
+            else:
+                # Si no hay teléfono del canal ni contacto, pedimos datos.
+                # Esto reemplaza la necesidad del botón “Solicitar cotización”.
+                session["estado_negociacion"] = "cotizacion_en_proceso"
+
+                final_response["response"] = (
+                    f"{final_response.get('response', '')}\n\n"
+                    "Para continuar con la cotización, ¿me confirmas nombre, "
+                    "empresa y correo?"
+                )
+
+            # Actualizamos Commercial Spine:
+            # - cotizacion_en_proceso -> preparar_cotizacion
+            # - datos_cotizacion_recibidos -> cotizacion_lista_para_asesor
+            update_commercial_process_state(
+                session=session,
+                detected_intent="producto",
+            )
+
             reset_technical_questions(session)
             clear_last_assistant_question(session)
 
