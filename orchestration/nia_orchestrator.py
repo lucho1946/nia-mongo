@@ -1701,8 +1701,6 @@ def process_message(
     )
 
     if commercial_continuity_response:
-        clear_last_assistant_question(session)
-
         # Esta respuesta ya no es una pregunta técnica pendiente.
         # Evitamos que una pregunta anterior contamine el flujo comercial.
         clear_last_assistant_question(session)
@@ -1711,6 +1709,7 @@ def process_message(
             session,
             commercial_continuity_response.get("response", ""),
         )
+
         save_session(session)
 
         return _attach_nia_os_metadata(
