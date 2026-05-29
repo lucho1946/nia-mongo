@@ -89,6 +89,11 @@ from orchestration.commercial_continuity import (
     build_commercial_quote_followup_response,
 )
 
+from orchestration.commercial_proforma import (
+    build_commercial_proforma_response,
+    build_commercial_proforma_data_capture_response,
+)
+
 
 # ============================================================
 # SESIONES
@@ -1646,7 +1651,82 @@ def process_message(
         )
     
     # --------------------------------------------------------
-    # 3.2.1 Captura de datos comerciales estructurados
+    # 3.2.1 Captura de datos de proforma
+    # --------------------------------------------------------
+    # Si NIA ya pidió RUT, NIT o documento fiscal y el cliente
+    # responde con ese dato, debemos capturarlo antes de cualquier
+    # captura comercial general.
+    #
+    # Esto evita que mensajes como:
+    # - "NIT 900123456-7"
+    # - "RUT 901234567"
+    # - "900123456"
+    #
+    # terminen interpretándose como teléfono, producto o búsqueda.
+    # --------------------------------------------------------
+    commercial_proforma_data_response = build_commercial_proforma_data_capture_response(
+        session=session,
+        message=message,
+        detected_intent=detected_intent,
+    )
+
+    if commercial_proforma_data_response:
+        clear_last_assistant_question(session)
+
+        append_assistant_message(
+            session,
+            commercial_proforma_data_response.get("response", ""),
+        )
+
+        save_session(session)
+
+        return _attach_nia_os_metadata(
+            commercial_proforma_data_response,
+            nia_os_context,
+        )
+
+    # --------------------------------------------------------
+    # 3.2.2 Proforma / cierre comercial
+    # --------------------------------------------------------
+    # Si el cliente ya tiene una cotización o seguimiento comercial
+    # y luego dice:
+    # - "quiero comprar"
+    # - "apruebo la cotización"
+    # - "sigamos"
+    # - "procedamos"
+    # - "quiero pagar"
+    # - "hagamos la proforma"
+    # - "envíame la proforma"
+    #
+    # NIA debe avanzar a proforma sin volver a vender desde cero
+    # y debe pedir RUT, NIT o documento fiscal.
+    #
+    # Este bloque va antes de la captura comercial general para evitar
+    # que una frase de cierre se trate como dato comercial normal.
+    # --------------------------------------------------------
+    commercial_proforma_response = build_commercial_proforma_response(
+        session=session,
+        message=message,
+        detected_intent=detected_intent,
+    )
+
+    if commercial_proforma_response:
+        clear_last_assistant_question(session)
+
+        append_assistant_message(
+            session,
+            commercial_proforma_response.get("response", ""),
+        )
+
+        save_session(session)
+
+        return _attach_nia_os_metadata(
+            commercial_proforma_response,
+            nia_os_context,
+        )
+
+    # --------------------------------------------------------
+    # 3.2.3 Captura de datos comerciales estructurados
     # --------------------------------------------------------
     # Si NIA ya inició una cotización y el cliente responde con:
     # - nombre
@@ -1681,9 +1761,9 @@ def process_message(
             commercial_data_response,
             nia_os_context,
         )
-    
+
     # --------------------------------------------------------
-    # 3.2.2 Seguimiento de cotización enviada / recibida
+    # 3.2.4 Seguimiento de cotización enviada / recibida
     # --------------------------------------------------------
     # NIA debe continuar en seguimiento, no iniciar una nueva cotización.
     # --------------------------------------------------------
@@ -1706,8 +1786,8 @@ def process_message(
         return _attach_nia_os_metadata(
             commercial_quote_followup_response,
             nia_os_context,
-        )    
-        
+        )
+
     # --------------------------------------------------------
     # 3.3. Continuidad comercial con último producto seleccionado
     # --------------------------------------------------------
@@ -1757,7 +1837,7 @@ def process_message(
 
         return _attach_nia_os_metadata(final_response, nia_os_context)
 
-        # --------------------------------------------------------
+    # --------------------------------------------------------
     # 5. Código exacto dentro de cualquier frase
     # --------------------------------------------------------
     # Regla fuerte:
