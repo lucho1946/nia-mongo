@@ -1448,6 +1448,94 @@ def _make_no_compatible_results_response(
         "decision_reason": "no_compatible_results",
     }
 
+def _extract_channel_phone_from_cliente_id(cliente_id: Optional[str]) -> Optional[str]:
+    """
+    Extrae teléfono desde cliente_id cuando representa un contacto real.
+
+    Casos válidos:
+    - 3001234567
+    - 573001234567
+    - +573001234567
+    - whatsapp:+573001234567
+
+    Casos NO válidos:
+    - anonimo
+    - test_azure_x
+    - cliente_web_demo
+    """
+    raw = "" if cliente_id is None else str(cliente_id).strip()
+
+    if not raw:
+        return None
+
+    normalized_text = raw.lower()
+
+    blocked_keywords = [
+        "anonimo",
+        "anonymous",
+        "test",
+        "demo",
+        "azure",
+        "web",
+        "cliente",
+        "user",
+        "session",
+    ]
+
+    if any(keyword in normalized_text for keyword in blocked_keywords):
+        return None
+
+    digits = re.sub(r"\D", "", raw)
+
+    if digits.startswith("57") and len(digits) >= 12:
+        digits = digits[2:]
+
+    if 7 <= len(digits) <= 10:
+        return digits
+
+    return None
+
+
+def _apply_channel_contact_fallback(
+    session: Dict[str, Any],
+    canal: Optional[str],
+    cliente_id: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Guarda en sesión el teléfono del canal cuando cliente_id parece número.
+
+    Esta regla implementa la premisa comercial:
+    si el cliente no entrega datos, la cotización se puede asociar
+    al número desde el cual escribió.
+    """
+    if not isinstance(session, dict):
+        return session
+
+    canal = "" if canal is None else str(canal).strip().lower()
+    cliente_id = "" if cliente_id is None else str(cliente_id).strip()
+
+    if canal:
+        session["canal"] = canal
+
+    if cliente_id:
+        session["cliente_id"] = cliente_id
+
+    channel_phone = _extract_channel_phone_from_cliente_id(cliente_id)
+
+    if not channel_phone:
+        return session
+
+    session["channel_contact_phone"] = channel_phone
+    session["commercial_contact_source"] = "channel_phone"
+
+    commercial_data = session.setdefault("commercial_data", {})
+
+    if not commercial_data.get("telefono"):
+        commercial_data["telefono"] = channel_phone
+        session["commercial_data"] = commercial_data
+
+    return session
+
 
 # ============================================================
 # PIPELINE PRINCIPAL
@@ -1456,6 +1544,8 @@ def _make_no_compatible_results_response(
 def process_message(
     message: str,
     session_id: Optional[str] = None,
+    canal: Optional[str] = None,
+    cliente_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Procesa un mensaje del usuario y devuelve la respuesta final de NIA.
@@ -1472,6 +1562,19 @@ def process_message(
     if not session:
         session = create_session()
         session_id = session["session_id"]
+        
+    # --------------------------------------------------------
+    # 1.1. Contacto de respaldo por canal
+    # --------------------------------------------------------
+    # Si el request trae cliente_id como número telefónico
+    # —por ejemplo desde WhatsApp—, lo usamos como teléfono
+    # comercial de respaldo para no bloquear cotización.
+    # --------------------------------------------------------
+    session = _apply_channel_contact_fallback(
+        session=session,
+        canal=canal,
+        cliente_id=cliente_id,
+    )
 
     # --------------------------------------------------------
     # 2. Detectar intención
@@ -1598,7 +1701,7 @@ def process_message(
     )
 
     if commercial_continuity_response:
-        session["estado_negociacion"] = "cotizacion_en_proceso"
+        clear_last_assistant_question(session)
 
         # Esta respuesta ya no es una pregunta técnica pendiente.
         # Evitamos que una pregunta anterior contamine el flujo comercial.

@@ -226,8 +226,10 @@ def process_chat_request(request: ChatRequest) -> ChatResponse:
     message = _safe_str(request.mensaje)
 
     orchestrator_result = process_message(
-        message=message,
-        session_id=request.session_id,
-    )
+    message=message,
+    session_id=request.session_id,
+    canal=request.canal,
+    cliente_id=request.cliente_id,
+)
 
     return adapt_orchestrator_result_to_chat_response(orchestrator_result)

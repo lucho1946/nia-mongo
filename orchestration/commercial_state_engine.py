@@ -268,18 +268,24 @@ def calculate_quote_missing_fields(
     """
     Calcula datos faltantes para cotización.
 
-    Regla actual segura:
-    - producto
-    - nombre
-    - empresa
-    - correo o teléfono
+    Regla comercial actual:
+    - Si NO hay teléfono del canal:
+      requerimos producto, nombre, empresa y correo o teléfono.
+
+    - Si SÍ hay teléfono del canal:
+      producto + teléfono del canal bastan para dejar la cotización viable.
+      Nombre y empresa pueden pedirse como datos opcionales, pero NO bloquean.
+
+    Alineación con Don Andrés:
+    Si el cliente no entrega datos, se toma el número por el cual escribió
+    y a ese número se le envía la cotización.
 
     Nota:
     El Commercial Spine define como required_fields:
     producto, cantidad, nombre, empresa, correo, ciudad.
 
     Sin embargo, para no frenar el flujo comercial actual, esta
-    primera integración NO obliga cantidad ni ciudad todavía.
+    integración NO obliga cantidad ni ciudad todavía.
 
     Más adelante, cuando Don Andrés lo confirme, podemos activar:
     enforce_spine_required_fields=True
@@ -292,13 +298,33 @@ def calculate_quote_missing_fields(
     if not product:
         missing.append("producto")
 
-    if not commercial_data.get("nombre_cliente"):
-        missing.append("nombre")
+    has_channel_phone = bool(
+        session.get("channel_contact_phone")
+        or session.get("commercial_contact_source") == "channel_phone"
+    )
 
-    if not commercial_data.get("empresa"):
-        missing.append("empresa")
+    has_contact = bool(
+        commercial_data.get("correo")
+        or commercial_data.get("telefono")
+        or session.get("channel_contact_phone")
+    )
 
-    if not commercial_data.get("correo") and not commercial_data.get("telefono"):
+    # ------------------------------------------------------------
+    # Regla comercial:
+    # Si tenemos teléfono del canal, nombre y empresa NO bloquean
+    # la cotización.
+    #
+    # Se pueden pedir como datos opcionales para mejorar la solicitud,
+    # pero no impiden dejar la cotización en proceso/lista.
+    # ------------------------------------------------------------
+    if not has_channel_phone:
+        if not commercial_data.get("nombre_cliente"):
+            missing.append("nombre")
+
+        if not commercial_data.get("empresa"):
+            missing.append("empresa")
+
+    if not has_contact:
         missing.append("correo o teléfono")
 
     if enforce_spine_required_fields:
