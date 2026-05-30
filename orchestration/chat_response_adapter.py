@@ -211,6 +211,16 @@ def adapt_orchestrator_result_to_chat_response(
         preguntas_hechas=preguntas_hechas,
         productos=productos,
         requiere_accion=requiere_accion,
+
+        # Metadata comercial.
+        estado_negociacion=orchestrator_result.get("estado_negociacion"),
+        commercial_process_state=orchestrator_result.get("commercial_process_state"),
+        siguiente_paso=orchestrator_result.get("siguiente_paso"),
+        datos_faltantes=orchestrator_result.get("datos_faltantes") or [],
+        datos_faltantes_proforma=orchestrator_result.get("datos_faltantes_proforma") or [],
+
+        # Handoff comercial estructurado.
+        commercial_handoff=orchestrator_result.get("commercial_handoff"),
     )
 
 

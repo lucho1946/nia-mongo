@@ -38,8 +38,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Dict, Any, Optional, List
-
+from typing import Optional, List, Literal, Dict, Any
 from core.intent_router import detect_intent
 from core.response_engine import generate_response
 

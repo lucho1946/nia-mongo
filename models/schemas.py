@@ -228,12 +228,32 @@ class ChatResponse(BaseModel):
     """
     Respuesta estándar del endpoint /chat.
 
-    Este contrato se mantiene para no romper el frontend actual.
+    Mantiene compatibilidad con frontend actual y además expone
+    metadata comercial útil para integración futura con asesor,
+    CRM, Bitrix o panel comercial.
     """
-    
+
     session_id: str
     respuesta: str
     estado: str = "recopilando"
     preguntas_hechas: int = 0
     productos: List[ProductoResponse] = Field(default_factory=list)
     requiere_accion: Optional[str] = None
+
+    # ------------------------------------------------------------
+    # Metadata comercial / Commercial Spine
+    # ------------------------------------------------------------
+    estado_negociacion: Optional[str] = None
+    commercial_process_state: Optional[str] = None
+    siguiente_paso: Optional[str] = None
+    datos_faltantes: List[str] = Field(default_factory=list)
+    datos_faltantes_proforma: List[str] = Field(default_factory=list)
+
+    # ------------------------------------------------------------
+    # Handoff comercial estructurado
+    # ------------------------------------------------------------
+    # Usamos "dict" nativo en vez de Dict[str, Any] para evitar
+    # problemas de forward references de Pydantic con __future__.annotations.
+    # El contenido ya viene validado desde commercial_handoff.py.
+    # ------------------------------------------------------------
+    commercial_handoff: Optional[dict] = None
