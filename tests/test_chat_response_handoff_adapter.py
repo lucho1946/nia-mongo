@@ -1,8 +1,8 @@
-# ============================================================
+﻿# ============================================================
 # test_chat_response_handoff_adapter.py
 # ============================================================
 # OBJETIVO:
-# Validar que el adapter público del endpoint /chat expone
+# Validar que el adapter pÃºblico del endpoint /chat expone
 # correctamente el commercial_handoff generado por el orquestador.
 #
 # Este test NO prueba directamente process_message().
@@ -12,14 +12,14 @@
 #   -> process_chat_request()
 #   -> ChatResponse
 #
-# Es decir, valida el contrato público que consumen:
+# Es decir, valida el contrato pÃºblico que consumen:
 # - frontend
 # - WhatsApp futuro
 # - Bitrix
 # - CRM
 # - panel comercial
 #
-# Alineación con Don Andrés:
+# AlineaciÃ³n con Don AndrÃ©s:
 # NIA debe dejar una oportunidad comercial accionable, no solo
 # una respuesta conversacional.
 # ============================================================
@@ -43,10 +43,10 @@ def load_local_env():
 
     Necesario para:
     - MONGO_CONNECTION_STRING
-    - catálogo real
+    - catÃ¡logo real
     - sesiones persistentes
     """
-    env_path = Path(__file__).resolve().parent / ".env"
+    env_path = Path(__file__).resolve().parents[1] / ".env"
 
     if not env_path.exists():
         print("NO EXISTE .env EN:", env_path)
@@ -77,9 +77,31 @@ def print_section(title: str):
     print("=" * 70)
 
 
+
+def normalize_text(value: str) -> str:
+    """
+    Normaliza texto para comparaciones en tests.
+
+    Evita que tildes o problemas de codificación rompan
+    validaciones que conceptualmente están correctas.
+    """
+    import unicodedata
+
+    value = "" if value is None else str(value)
+    value = value.lower().strip()
+
+    value = "".join(
+        char
+        for char in unicodedata.normalize("NFKD", value)
+        if not unicodedata.combining(char)
+    )
+
+    return value
+
+
 def assert_condition(condition: bool, message: str):
     """
-    Assertion con mensaje claro para diagnóstico rápido.
+    Assertion con mensaje claro para diagnÃ³stico rÃ¡pido.
     """
     if not condition:
         raise AssertionError(message)
@@ -104,11 +126,11 @@ def show_handoff(label: str, handoff):
 
 # ============================================================
 # CASO 1
-# El adapter debe exponer handoff de cotización
+# El adapter debe exponer handoff de cotizaciÃ³n
 # ============================================================
 
 def run_case_adapter_exposes_quote_handoff():
-    print_section("CASO 1: adapter expone commercial_handoff de cotización")
+    print_section("CASO 1: adapter expone commercial_handoff de cotizaciÃ³n")
 
     r1 = process_chat_request(ChatRequest(
         mensaje="busco el 300203",
@@ -128,13 +150,13 @@ def run_case_adapter_exposes_quote_handoff():
     show_handoff("COMMERCIAL_HANDOFF R2", r2.commercial_handoff)
 
     assert_condition(
-        "Encontré el producto exacto" in r1.respuesta,
-        "R1 debe encontrar el producto exacto.",
+    "encontre el producto exacto" in normalize_text(r1.respuesta),
+    "R1 debe encontrar el producto exacto.",
     )
 
     assert_condition(
-        "Para continuar con la cotización" in r1.respuesta,
-        "R1 debe pedir datos comerciales automáticamente.",
+    "para continuar con la cotizacion" in normalize_text(r1.respuesta),
+    "R1 debe pedir datos comerciales automáticamente.",
     )
 
     assert_condition(
@@ -200,7 +222,7 @@ def run_case_adapter_exposes_quote_handoff():
     )
 
     assert_condition(
-        handoff.get("producto_disponibilidad") == "Disponible en Bogotá (6 und)",
+        normalize_text(handoff.get("producto_disponibilidad")) == "disponible en bogota (6 und)",
         "El handoff debe conservar disponibilidad.",
     )
 
@@ -239,11 +261,11 @@ def run_case_adapter_exposes_quote_handoff():
 
 # ============================================================
 # CASO 2
-# El adapter debe exponer handoff con teléfono del canal
+# El adapter debe exponer handoff con telÃ©fono del canal
 # ============================================================
 
 def run_case_adapter_exposes_channel_phone_handoff():
-    print_section("CASO 2: adapter expone handoff con teléfono del canal")
+    print_section("CASO 2: adapter expone handoff con telÃ©fono del canal")
 
     r1 = process_chat_request(ChatRequest(
         mensaje="busco el 300203",
@@ -255,25 +277,25 @@ def run_case_adapter_exposes_channel_phone_handoff():
     show_handoff("COMMERCIAL_HANDOFF WHATSAPP", r1.commercial_handoff)
 
     assert_condition(
-        "Encontré el producto exacto" in r1.respuesta,
+        "encontre el producto exacto" in normalize_text(r1.respuesta),
         "Debe encontrar producto exacto.",
     )
 
     assert_condition(
-        "este mismo número de contacto" in r1.respuesta,
-        "Debe indicar que puede enviar cotización al número del canal.",
+    "este mismo numero de contacto" in normalize_text(r1.respuesta),
+    "Debe indicar que puede enviar cotización al número del canal.",
     )
 
     assert_condition(
         r1.commercial_handoff is not None,
-        "ChatResponse debe exponer commercial_handoff con teléfono del canal.",
+        "ChatResponse debe exponer commercial_handoff con telÃ©fono del canal.",
     )
 
     handoff = r1.commercial_handoff
 
     assert_condition(
         handoff.get("tipo") == "cotizacion",
-        "El handoff con teléfono debe ser tipo cotizacion.",
+        "El handoff con telÃ©fono debe ser tipo cotizacion.",
     )
 
     assert_condition(
@@ -283,7 +305,7 @@ def run_case_adapter_exposes_channel_phone_handoff():
 
     assert_condition(
         handoff.get("telefono") == "3001234567",
-        "Debe guardar el teléfono normalizado del canal.",
+        "Debe guardar el telÃ©fono normalizado del canal.",
     )
 
     assert_condition(
@@ -303,17 +325,17 @@ def run_case_adapter_exposes_channel_phone_handoff():
 
     assert_condition(
         handoff.get("producto_precio") == "$475,114 COP",
-        "Debe conservar precio en handoff con teléfono.",
+        "Debe conservar precio en handoff con telÃ©fono.",
     )
 
     assert_condition(
-        handoff.get("producto_disponibilidad") == "Disponible en Bogotá (6 und)",
+        normalize_text(handoff.get("producto_disponibilidad")) == "disponible en bogota (6 und)",
         "Debe conservar disponibilidad en handoff con teléfono.",
     )
 
     assert_condition(
         handoff.get("producto_tiempo_entrega") == "1 DIAS",
-        "Debe conservar entrega en handoff con teléfono.",
+        "Debe conservar entrega en handoff con telÃ©fono.",
     )
 
     clear_session(r1.session_id)
@@ -340,3 +362,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

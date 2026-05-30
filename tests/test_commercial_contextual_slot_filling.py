@@ -1,19 +1,19 @@
-# ============================================================
+﻿# ============================================================
 # test_commercial_contextual_slot_filling.py
 # ============================================================
 # Prueba de slot filling contextual comercial.
 #
 # Objetivo:
 # Validar que NIA interprete respuestas humanas cortas dentro
-# del flujo de cotización:
+# del flujo de cotizaciÃ³n:
 #
 # - "Luisa" -> nombre
 # - "Industrias ABC" -> empresa
 # - "Se llama Industrias ABC" -> empresa
 # - "luisa@abc.com" -> correo
-# - "Te estoy dando mi nombre" -> no buscar producto; pedir aclaración
+# - "Te estoy dando mi nombre" -> no buscar producto; pedir aclaraciÃ³n
 #
-# Alineación con Commercial Spine:
+# AlineaciÃ³n con Commercial Spine:
 # - leer contexto
 # - no pedir datos repetidos
 # - pedir solo faltantes
@@ -34,7 +34,7 @@ def load_local_env() -> None:
     """
     Carga .env para pruebas locales con MongoDB.
     """
-    env_path = Path(__file__).resolve().parent / ".env"
+    env_path = Path(__file__).resolve().parents[1] / ".env"
 
     if not env_path.exists():
         return
@@ -84,7 +84,7 @@ def print_step(title: str, response: Dict[str, Any]) -> None:
 
 def print_session(title: str, session: Dict[str, Any]) -> None:
     """
-    Imprime estado comercial de sesión.
+    Imprime estado comercial de sesiÃ³n.
     """
     print("\n" + "-" * 70)
     print(title)
@@ -115,15 +115,15 @@ def run_flow_short_name_company_email() -> None:
 
     session = get_session(session_id) or {}
 
-    print_step("RESPUESTA INICIO COTIZACIÓN", r2)
+    print_step("RESPUESTA INICIO COTIZACIÃ“N", r2)
     print_step("RESPUESTA NOMBRE CORTO", r3)
     print_step("RESPUESTA EMPRESA CORTA", r4)
     print_step("RESPUESTA CORREO", r5)
     print_session("SESSION FINAL FLUJO 1", session)
 
     assert_condition(
-        "iniciar la cotización" in _response_text(r2),
-        "El segundo mensaje debe iniciar cotización antes de capturar datos.",
+        "iniciar la cotizaciÃ³n" in _response_text(r2),
+        "El segundo mensaje debe iniciar cotizaciÃ³n antes de capturar datos.",
     )
 
     assert_condition(
@@ -133,11 +133,11 @@ def run_flow_short_name_company_email() -> None:
 
     assert_condition(
         "Ya tengo nombre" in _response_text(r3),
-        "Después de 'Luisa' debe indicar que ya tiene nombre.",
+        "DespuÃ©s de 'Luisa' debe indicar que ya tiene nombre.",
     )
 
     assert_condition(
-        "Encontré varias opciones" not in _response_text(r4),
+        "EncontrÃ© varias opciones" not in _response_text(r4),
         "No debe buscar productos cuando recibe empresa corta.",
     )
 
@@ -203,15 +203,15 @@ def run_flow_se_llama_company() -> None:
 
     session = get_session(session_id) or {}
 
-    print_step("RESPUESTA INICIO COTIZACIÓN", r2)
+    print_step("RESPUESTA INICIO COTIZACIÃ“N", r2)
     print_step("RESPUESTA NOMBRE", r3)
     print_step("RESPUESTA EMPRESA SE LLAMA", r4)
     print_step("RESPUESTA CORREO", r5)
     print_session("SESSION FINAL FLUJO 2", session)
 
     assert_condition(
-        "iniciar la cotización" in _response_text(r2),
-        "El segundo mensaje debe iniciar cotización antes de capturar datos.",
+        "iniciar la cotizaciÃ³n" in _response_text(r2),
+        "El segundo mensaje debe iniciar cotizaciÃ³n antes de capturar datos.",
     )
 
     assert_condition(
@@ -230,7 +230,7 @@ def run_flow_se_llama_company() -> None:
     )
 
     assert_condition(
-        "Encontré varias opciones" not in _response_text(r4),
+        "EncontrÃ© varias opciones" not in _response_text(r4),
         "No debe buscar productos cuando recibe empresa.",
     )
 
@@ -253,7 +253,7 @@ def run_flow_meta_reply() -> None:
     300203 -> cotizar -> Te estoy dando mi nombre -> Luisa
     """
     print("\n" + "#" * 70)
-    print("FLUJO 3: respuesta meta no debe caer a búsqueda")
+    print("FLUJO 3: respuesta meta no debe caer a bÃºsqueda")
     print("#" * 70)
 
     r1 = process_message("busco el 300203")
@@ -265,16 +265,16 @@ def run_flow_meta_reply() -> None:
 
     session = get_session(session_id) or {}
 
-    print_step("RESPUESTA INICIO COTIZACIÓN", r2)
+    print_step("RESPUESTA INICIO COTIZACIÃ“N", r2)
     print_step("RESPUESTA META", r3)
-    print_step("RESPUESTA NOMBRE DESPUÉS DE META", r4)
+    print_step("RESPUESTA NOMBRE DESPUÃ‰S DE META", r4)
     print_session("SESSION PARCIAL FLUJO 3", session)
 
     response_meta = _response_text(r3)
 
     assert_condition(
-        "iniciar la cotización" in _response_text(r2),
-        "El segundo mensaje debe iniciar cotización antes de capturar datos.",
+        "iniciar la cotizaciÃ³n" in _response_text(r2),
+        "El segundo mensaje debe iniciar cotizaciÃ³n antes de capturar datos.",
     )
 
     assert_condition(
@@ -288,18 +288,18 @@ def run_flow_meta_reply() -> None:
     )
 
     assert_condition(
-        "Encontré varias opciones" not in response_meta,
+        "EncontrÃ© varias opciones" not in response_meta,
         "La respuesta meta no debe buscar productos.",
     )
 
     assert_condition(
         session.get("commercial_data", {}).get("nombre_cliente") == "Luisa",
-        "Después de 'Luisa' debe guardar nombre_cliente Luisa.",
+        "DespuÃ©s de 'Luisa' debe guardar nombre_cliente Luisa.",
     )
 
     assert_condition(
         session.get("estado_negociacion") == "datos_cotizacion_parciales",
-        "Después de solo nombre debe quedar datos_cotizacion_parciales.",
+        "DespuÃ©s de solo nombre debe quedar datos_cotizacion_parciales.",
     )
 
     assert_condition(
@@ -316,7 +316,7 @@ def run_flow_phone_direct() -> None:
     300203 -> cotizar -> Luisa -> Industrias ABC -> 3001234567
     """
     print("\n" + "#" * 70)
-    print("FLUJO 4: teléfono directo")
+    print("FLUJO 4: telÃ©fono directo")
     print("#" * 70)
 
     r1 = process_message("busco el 300203")
@@ -329,28 +329,28 @@ def run_flow_phone_direct() -> None:
 
     session = get_session(session_id) or {}
 
-    print_step("RESPUESTA INICIO COTIZACIÓN", r2)
-    print_step("RESPUESTA TELÉFONO", r5)
+    print_step("RESPUESTA INICIO COTIZACIÃ“N", r2)
+    print_step("RESPUESTA TELÃ‰FONO", r5)
     print_session("SESSION FINAL FLUJO 4", session)
 
     assert_condition(
-        "iniciar la cotización" in _response_text(r2),
-        "El segundo mensaje debe iniciar cotización antes de capturar datos.",
+        "iniciar la cotizaciÃ³n" in _response_text(r2),
+        "El segundo mensaje debe iniciar cotizaciÃ³n antes de capturar datos.",
     )
 
     assert_condition(
         session.get("commercial_data", {}).get("telefono") == "3001234567",
-        "Debe guardar teléfono 3001234567.",
+        "Debe guardar telÃ©fono 3001234567.",
     )
 
     assert_condition(
         session.get("estado_negociacion") == "datos_cotizacion_recibidos",
-        "Con nombre, empresa y teléfono debe quedar datos_cotizacion_recibidos.",
+        "Con nombre, empresa y telÃ©fono debe quedar datos_cotizacion_recibidos.",
     )
 
     assert_condition(
         session.get("datos_faltantes") == [],
-        "No deben quedar datos faltantes con teléfono.",
+        "No deben quedar datos faltantes con telÃ©fono.",
     )
 
     assert_condition(
@@ -378,8 +378,10 @@ def main() -> None:
     run_flow_meta_reply()
     run_flow_phone_direct()
 
-    print("\nFIN TEST COMMERCIAL CONTEXTUAL SLOT FILLING ✅")
+    print("\nFIN TEST COMMERCIAL CONTEXTUAL SLOT FILLING âœ…")
 
 
 if __name__ == "__main__":
     main()
+
+

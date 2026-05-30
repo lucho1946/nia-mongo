@@ -1,11 +1,11 @@
-# ============================================================
+﻿# ============================================================
 # test_product_scoring.py
 # ============================================================
 # Prueba segura del scoring de productos para NIA.
 #
 # Este test:
 # - carga .env
-# - lee el Excel de Don Andrés
+# - lee el Excel de Don AndrÃ©s
 # - valida columnas CODIGO y score
 # - ejecuta dry-run contra MongoDB
 # - NO modifica products_catalog
@@ -32,7 +32,7 @@ from services.product_scoring import (
 
 
 # ============================================================
-# CONFIGURACIÓN
+# CONFIGURACIÃ“N
 # ============================================================
 
 EXCEL_PATH = "productos-289496 con Score para Nia.xlsx"
@@ -66,8 +66,8 @@ def validate_environment() -> bool:
     """
     if not os.getenv("MONGO_CONNECTION_STRING"):
         print("\nERROR:")
-        print("No se encontró MONGO_CONNECTION_STRING en el entorno.")
-        print("Verifica tu archivo .env en la raíz del proyecto.")
+        print("No se encontrÃ³ MONGO_CONNECTION_STRING en el entorno.")
+        print("Verifica tu archivo .env en la raÃ­z del proyecto.")
         return False
 
     print("Variable MONGO_CONNECTION_STRING detectada correctamente.")
@@ -99,7 +99,7 @@ def main() -> None:
     if not excel_path.exists():
         print("\nERROR:")
         print(f"No existe el archivo: {excel_path}")
-        print("Copia el Excel de Don Andrés en la raíz del proyecto o ajusta EXCEL_PATH.")
+        print("Copia el Excel de Don AndrÃ©s en la raÃ­z del proyecto o ajusta EXCEL_PATH.")
         return
 
     print("\n2. Leyendo muestra del Excel...")
@@ -119,13 +119,13 @@ def main() -> None:
     })
 
     if not read_result.get("ok"):
-        print("\nNo se puede continuar porque la lectura del Excel falló.")
+        print("\nNo se puede continuar porque la lectura del Excel fallÃ³.")
         return
 
     records = read_result.get("records", [])
 
     if not records:
-        print("\nNo hay registros válidos para probar.")
+        print("\nNo hay registros vÃ¡lidos para probar.")
         return
 
     print("\n3. Ejecutando dry-run contra MongoDB...")
@@ -145,3 +145,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

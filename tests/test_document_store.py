@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # test_document_store.py
 # ============================================================
 # Prueba aislada de almacenamiento documental de NIA.
@@ -14,7 +14,7 @@
 # NO toca:
 # - nia_orchestrator.py
 # - products_catalog
-# - flujo conversacional de producción
+# - flujo conversacional de producciÃ³n
 #
 # IMPORTANTE:
 # Este test necesita que exista en tu .env:
@@ -57,7 +57,7 @@ from retrieval.document_retriever import (
 
 
 # ============================================================
-# CONFIGURACIÓN
+# CONFIGURACIÃ“N
 # ============================================================
 
 FOLDER_TO_TEST = "knowledge/nia_os"
@@ -66,7 +66,7 @@ TAGS = ["nia_os", "don_andres", "reglas"]
 
 
 # ============================================================
-# VALIDACIÓN PREVIA
+# VALIDACIÃ“N PREVIA
 # ============================================================
 
 def validate_environment() -> bool:
@@ -77,8 +77,8 @@ def validate_environment() -> bool:
 
     if not mongo_uri:
         print("\nERROR:")
-        print("No se encontró la variable MONGO_CONNECTION_STRING.")
-        print("Verifica que tu archivo .env exista en la raíz del proyecto y tenga:")
+        print("No se encontrÃ³ la variable MONGO_CONNECTION_STRING.")
+        print("Verifica que tu archivo .env exista en la raÃ­z del proyecto y tenga:")
         print("MONGO_CONNECTION_STRING=mongodb+srv://...")
         print("\nNo pegues la URI en el chat por seguridad.")
         return False
@@ -88,7 +88,7 @@ def validate_environment() -> bool:
 
 
 # ============================================================
-# IMPRESIÓN AUXILIAR
+# IMPRESIÃ“N AUXILIAR
 # ============================================================
 
 def print_separator(title: str) -> None:
@@ -131,18 +131,18 @@ def main() -> None:
         return
 
     # --------------------------------------------------------
-    # 1. Crear/verificar índices
+    # 1. Crear/verificar Ã­ndices
     # --------------------------------------------------------
-    print("\n1. Creando/verificando índices...")
+    print("\n1. Creando/verificando Ã­ndices...")
 
     try:
         index_result = ensure_document_indexes()
-        print("Índices OK:", index_result.get("ok"))
-        print("Colección:", index_result.get("collection"))
-        print("Índices:", index_result.get("indexes"))
+        print("Ãndices OK:", index_result.get("ok"))
+        print("ColecciÃ³n:", index_result.get("collection"))
+        print("Ãndices:", index_result.get("indexes"))
 
     except Exception as error:
-        print("\nERROR creando índices:")
+        print("\nERROR creando Ã­ndices:")
         print(error)
         return
 
@@ -270,3 +270,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -1,7 +1,7 @@
-# ============================================================
+﻿# ============================================================
 # test_commercial_state_flow_integration.py
 # ============================================================
-# Prueba de integración entre:
+# Prueba de integraciÃ³n entre:
 # - nia_orchestrator.py
 # - commercial_continuity.py
 # - commercial_data_extractor.py
@@ -9,7 +9,7 @@
 # - conversation_memory.py
 #
 # Objetivo:
-# Validar que el flujo real de chat actualice en sesión:
+# Validar que el flujo real de chat actualice en sesiÃ³n:
 # - commercial_process_id
 # - commercial_process_state
 # - ultimo_paso
@@ -19,7 +19,7 @@
 #
 # IMPORTANTE:
 # Este test necesita MONGO_CONNECTION_STRING porque ejecuta el
-# flujo real de búsqueda/catálogo y memoria.
+# flujo real de bÃºsqueda/catÃ¡logo y memoria.
 # ============================================================
 
 from __future__ import annotations
@@ -39,9 +39,9 @@ def load_local_env() -> None:
 
     Este test ejecuta process_message() directamente, sin levantar FastAPI.
     Por eso debemos cargar MONGO_CONNECTION_STRING manualmente antes de
-    importar módulos internos que usan MongoDB.
+    importar mÃ³dulos internos que usan MongoDB.
     """
-    env_path = Path(__file__).resolve().parent / ".env"
+    env_path = Path(__file__).resolve().parents[1] / ".env"
 
     if not env_path.exists():
         return
@@ -68,7 +68,7 @@ def load_local_env() -> None:
                 os.environ[key] = value
 
 
-# Cargamos .env antes de importar módulos del proyecto.
+# Cargamos .env antes de importar mÃ³dulos del proyecto.
 load_local_env()
 
 
@@ -120,7 +120,7 @@ def get_required_env_value(key: str) -> str:
 
     assert_condition(
         bool(value),
-        f"{key} debe estar configurado para esta prueba de integración.",
+        f"{key} debe estar configurado para esta prueba de integraciÃ³n.",
     )
 
     return value
@@ -136,13 +136,13 @@ def main() -> None:
     print("=" * 70)
 
     # --------------------------------------------------------
-    # Validación de entorno
+    # ValidaciÃ³n de entorno
     # --------------------------------------------------------
     # Esta prueba usa el flujo real:
-    # - búsqueda por código
-    # - sesión
+    # - bÃºsqueda por cÃ³digo
+    # - sesiÃ³n
     # - memoria
-    # - catálogo
+    # - catÃ¡logo
     #
     # Por eso necesita MongoDB configurado.
     # --------------------------------------------------------
@@ -150,7 +150,7 @@ def main() -> None:
 
     # ========================================================
     # FLUJO 1:
-    # Producto -> cotización -> datos parciales
+    # Producto -> cotizaciÃ³n -> datos parciales
     # ========================================================
 
     r1 = process_message(
@@ -162,12 +162,12 @@ def main() -> None:
 
     assert_condition(
         bool(session_id),
-        "Debe existir session_id después de buscar producto.",
+        "Debe existir session_id despuÃ©s de buscar producto.",
     )
 
     assert_condition(
         r1.get("cards"),
-        "La búsqueda por código 300203 debe devolver producto.",
+        "La bÃºsqueda por cÃ³digo 300203 debe devolver producto.",
     )
 
     process_message(
@@ -178,13 +178,13 @@ def main() -> None:
     session = get_session(session_id) or {}
 
     print_session_state(
-        "DESPUÉS DE INICIAR COTIZACIÓN",
+        "DESPUÃ‰S DE INICIAR COTIZACIÃ“N",
         session,
     )
 
     assert_condition(
         session.get("estado_negociacion") == "cotizacion_en_proceso",
-        "Al iniciar cotización, estado_negociacion debe ser cotizacion_en_proceso.",
+        "Al iniciar cotizaciÃ³n, estado_negociacion debe ser cotizacion_en_proceso.",
     )
 
     assert_condition(
@@ -204,22 +204,22 @@ def main() -> None:
 
     assert_condition(
         session.get("siguiente_paso") == "pedir_datos_faltantes_cotizacion",
-        "Después de preparar_cotizacion debe seguir pedir_datos_faltantes_cotizacion.",
+        "DespuÃ©s de preparar_cotizacion debe seguir pedir_datos_faltantes_cotizacion.",
     )
 
     assert_condition(
         "nombre" in session.get("datos_faltantes", []),
-        "Debe faltar nombre al iniciar cotización.",
+        "Debe faltar nombre al iniciar cotizaciÃ³n.",
     )
 
     assert_condition(
         "empresa" in session.get("datos_faltantes", []),
-        "Debe faltar empresa al iniciar cotización.",
+        "Debe faltar empresa al iniciar cotizaciÃ³n.",
     )
 
     assert_condition(
-        "correo o teléfono" in session.get("datos_faltantes", []),
-        "Debe faltar correo o teléfono al iniciar cotización.",
+        "correo o telÃ©fono" in session.get("datos_faltantes", []),
+        "Debe faltar correo o telÃ©fono al iniciar cotizaciÃ³n.",
     )
 
     process_message(
@@ -230,7 +230,7 @@ def main() -> None:
     session = get_session(session_id) or {}
 
     print_session_state(
-        "DESPUÉS DE DATOS PARCIALES",
+        "DESPUÃ‰S DE DATOS PARCIALES",
         session,
     )
 
@@ -251,7 +251,7 @@ def main() -> None:
 
     assert_condition(
         session.get("siguiente_paso") == "esperar_respuesta_cliente",
-        "Después de pedir faltantes debe esperar respuesta del cliente.",
+        "DespuÃ©s de pedir faltantes debe esperar respuesta del cliente.",
     )
 
     assert_condition(
@@ -260,8 +260,8 @@ def main() -> None:
     )
 
     assert_condition(
-        "correo o teléfono" in session.get("datos_faltantes", []),
-        "Con solo nombre debe seguir faltando correo o teléfono.",
+        "correo o telÃ©fono" in session.get("datos_faltantes", []),
+        "Con solo nombre debe seguir faltando correo o telÃ©fono.",
     )
 
     assert_condition(
@@ -273,7 +273,7 @@ def main() -> None:
 
     # ========================================================
     # FLUJO 2:
-    # Producto -> cotización -> datos completos
+    # Producto -> cotizaciÃ³n -> datos completos
     # ========================================================
 
     r4 = process_message(
@@ -290,7 +290,7 @@ def main() -> None:
 
     assert_condition(
         r4.get("cards"),
-        "La segunda búsqueda por código 300203 debe devolver producto.",
+        "La segunda bÃºsqueda por cÃ³digo 300203 debe devolver producto.",
     )
 
     process_message(
@@ -306,7 +306,7 @@ def main() -> None:
     session_2 = get_session(session_id_2) or {}
 
     print_session_state(
-        "DESPUÉS DE DATOS COMPLETOS",
+        "DESPUÃ‰S DE DATOS COMPLETOS",
         session_2,
     )
 
@@ -337,12 +337,12 @@ def main() -> None:
 
     assert_condition(
         session_2.get("siguiente_paso") == "validando_cumplimiento",
-        "Después de cotizacion_lista_para_asesor debe seguir validando_cumplimiento.",
+        "DespuÃ©s de cotizacion_lista_para_asesor debe seguir validando_cumplimiento.",
     )
 
     assert_condition(
         session_2.get("datos_faltantes") == [],
-        "Con producto, nombre, empresa y correo no deben faltar datos mínimos.",
+        "Con producto, nombre, empresa y correo no deben faltar datos mÃ­nimos.",
     )
 
     assert_condition(
@@ -367,8 +367,9 @@ def main() -> None:
 
     clear_session(session_id_2)
 
-    print("\nFIN TEST COMMERCIAL STATE FLOW INTEGRATION ✅")
+    print("\nFIN TEST COMMERCIAL STATE FLOW INTEGRATION âœ…")
 
 
 if __name__ == "__main__":
     main()
+

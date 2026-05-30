@@ -1,21 +1,21 @@
-# ============================================================
+﻿# ============================================================
 # test_commercial_proforma_flow.py
 # ============================================================
 # OBJETIVO:
 # Validar el flujo comercial de proforma/cierre de NIA.
 #
 # Este test asegura que:
-# 1. NIA no reinicie la cotización cuando el cliente quiere comprar.
+# 1. NIA no reinicie la cotizaciÃ³n cuando el cliente quiere comprar.
 # 2. NIA avance a proforma cuando el cliente acepta o pide comprar.
 # 3. NIA pida RUT, NIT o documento fiscal.
 # 4. NIA capture NIT/RUT/documento fiscal.
-# 5. NIA deje la proforma lista para revisión del asesor.
+# 5. NIA deje la proforma lista para revisiÃ³n del asesor.
 #
-# Alineación con Don Andrés:
+# AlineaciÃ³n con Don AndrÃ©s:
 # - Si el cliente quiere comprar, avanzar a proforma sin volver a vender desde cero.
 # - Para proforma es obligatorio pedir RUT, NIT o documento fiscal.
 # - No inventar datos.
-# - No buscar productos nuevos cuando ya hay producto/cotización activa.
+# - No buscar productos nuevos cuando ya hay producto/cotizaciÃ³n activa.
 # ============================================================
 
 from pathlib import Path
@@ -32,10 +32,10 @@ def load_local_env():
 
     Necesario para:
     - MONGO_CONNECTION_STRING
-    - acceso a catálogo real
+    - acceso a catÃ¡logo real
     - persistencia de sesiones
     """
-    env_path = Path(__file__).resolve().parent / ".env"
+    env_path = Path(__file__).resolve().parents[1] / ".env"
 
     if not env_path.exists():
         print("NO EXISTE .env EN:", env_path)
@@ -98,11 +98,11 @@ def assert_condition(condition: bool, message: str):
 
 def run_base_quote_flow():
     """
-    Crea una sesión con:
+    Crea una sesiÃ³n con:
     - producto 300203 seleccionado
-    - cotización iniciada
+    - cotizaciÃ³n iniciada
     - datos comerciales completos
-    - seguimiento de cotización enviada
+    - seguimiento de cotizaciÃ³n enviada
 
     Retorna:
     - session_id
@@ -122,7 +122,7 @@ def run_base_quote_flow():
     )
 
     r4 = process_message(
-        "Ya me enviaron la cotización",
+        "Ya me enviaron la cotizaciÃ³n",
         session_id=session_id,
     )
 
@@ -157,7 +157,7 @@ def show_session(session_id: str):
 
 # ============================================================
 # CASO 1
-# Cotización completa -> quiero comprar -> pide documento fiscal
+# CotizaciÃ³n completa -> quiero comprar -> pide documento fiscal
 # ============================================================
 
 def run_flow_buy_intent_requests_fiscal_document():
@@ -191,7 +191,7 @@ def run_flow_buy_intent_requests_fiscal_document():
 
     assert_condition(
         session.get("datos_faltantes_proforma") == ["RUT, NIT o documento fiscal"],
-        "Debe faltar únicamente RUT, NIT o documento fiscal.",
+        "Debe faltar Ãºnicamente RUT, NIT o documento fiscal.",
     )
 
     assert_condition(
@@ -229,7 +229,7 @@ def run_flow_nit_capture_completes_proforma():
 
     assert_condition(
         "documento fiscal" in response_text(r6).lower(),
-        "La respuesta debe confirmar que recibió el documento fiscal.",
+        "La respuesta debe confirmar que recibiÃ³ el documento fiscal.",
     )
 
     assert_condition(
@@ -310,11 +310,11 @@ def run_flow_rut_capture():
 
 # ============================================================
 # CASO 4
-# Cliente responde solo número fiscal
+# Cliente responde solo nÃºmero fiscal
 # ============================================================
 
 def run_flow_plain_fiscal_number_capture():
-    print_case("CASO 4: captura número fiscal sin etiqueta")
+    print_case("CASO 4: captura nÃºmero fiscal sin etiqueta")
 
     session_id, r1, r2, r3, r4 = run_base_quote_flow()
 
@@ -358,18 +358,18 @@ def run_flow_plain_fiscal_number_capture():
 
 # ============================================================
 # CASO 5
-# Varias frases de intención deben activar proforma
+# Varias frases de intenciÃ³n deben activar proforma
 # ============================================================
 
 def run_flow_multiple_proforma_intent_phrases():
     print_case("CASO 5: frases naturales activan proforma")
 
     phrases = [
-        "apruebo la cotización",
+        "apruebo la cotizaciÃ³n",
         "sigamos",
         "procedamos",
         "quiero pagar",
-        "envíame la proforma",
+        "envÃ­ame la proforma",
         "necesito la proforma",
     ]
 
@@ -420,7 +420,7 @@ def run_flow_no_commercial_context_does_not_force_proforma():
 
     assert_condition(
         session.get("commercial_process_state") != "pedir_datos_faltantes_proforma",
-        "Sin producto/cotización previa no debe entrar a pedir datos de proforma.",
+        "Sin producto/cotizaciÃ³n previa no debe entrar a pedir datos de proforma.",
     )
 
     assert_condition(
@@ -449,8 +449,9 @@ def main():
     run_flow_multiple_proforma_intent_phrases()
     run_flow_no_commercial_context_does_not_force_proforma()
 
-    print("\nFIN TEST COMMERCIAL PROFORMA FLOW ✅")
+    print("\nFIN TEST COMMERCIAL PROFORMA FLOW âœ…")
 
 
 if __name__ == "__main__":
     main() 
+

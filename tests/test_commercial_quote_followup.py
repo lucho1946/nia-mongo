@@ -1,7 +1,7 @@
-# ============================================================
+﻿# ============================================================
 # test_commercial_quote_followup.py
 # ============================================================
-# Prueba de seguimiento posterior a cotización enviada/recibida.
+# Prueba de seguimiento posterior a cotizaciÃ³n enviada/recibida.
 # ============================================================
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from memory.conversation_memory import get_session, clear_session
 
 
 def load_local_env() -> None:
-    env_path = Path(__file__).resolve().parent / ".env"
+    env_path = Path(__file__).resolve().parents[1] / ".env"
 
     if not env_path.exists():
         return
@@ -56,8 +56,8 @@ def print_response(title: str, response: Dict[str, Any]) -> None:
 
 def prepare_completed_quote_flow() -> str:
     """
-    Crea una conversación con:
-    producto activo + cotización iniciada + datos comerciales completos.
+    Crea una conversaciÃ³n con:
+    producto activo + cotizaciÃ³n iniciada + datos comerciales completos.
     """
     r1 = process_message("busco el 300203")
     session_id = r1["session_id"]
@@ -72,13 +72,13 @@ def prepare_completed_quote_flow() -> str:
 
 def test_quote_sent_followup() -> None:
     print("\n" + "#" * 70)
-    print("CASO 1: Ya me enviaron la cotización")
+    print("CASO 1: Ya me enviaron la cotizaciÃ³n")
     print("#" * 70)
 
     session_id = prepare_completed_quote_flow()
 
     response = process_message(
-        "Ya me enviaron la cotización",
+        "Ya me enviaron la cotizaciÃ³n",
         session_id=session_id,
     )
 
@@ -91,13 +91,13 @@ def test_quote_sent_followup() -> None:
     print("siguiente_paso:", session.get("siguiente_paso"))
 
     assert_condition(
-        "continuamos sobre la cotización enviada" in text,
-        "Debe responder seguimiento sobre cotización enviada.",
+        "continuamos sobre la cotizaciÃ³n enviada" in text,
+        "Debe responder seguimiento sobre cotizaciÃ³n enviada.",
     )
 
     assert_condition(
-        "iniciar la cotización" not in text,
-        "No debe iniciar una cotización nueva.",
+        "iniciar la cotizaciÃ³n" not in text,
+        "No debe iniciar una cotizaciÃ³n nueva.",
     )
 
     assert_condition(
@@ -120,28 +120,28 @@ def test_quote_sent_followup() -> None:
 
 def test_quote_received_followup() -> None:
     print("\n" + "#" * 70)
-    print("CASO 2: Ya recibí la cotización")
+    print("CASO 2: Ya recibÃ­ la cotizaciÃ³n")
     print("#" * 70)
 
     session_id = prepare_completed_quote_flow()
 
     response = process_message(
-        "Ya recibí la cotización",
+        "Ya recibÃ­ la cotizaciÃ³n",
         session_id=session_id,
     )
 
     text = response_text(response)
 
-    print_response("RESPUESTA RECIBÍ COTIZACIÓN", response)
+    print_response("RESPUESTA RECIBÃ COTIZACIÃ“N", response)
 
     assert_condition(
-        "continuamos sobre la cotización enviada" in text,
-        "Debe manejar cotización recibida como seguimiento.",
+        "continuamos sobre la cotizaciÃ³n enviada" in text,
+        "Debe manejar cotizaciÃ³n recibida como seguimiento.",
     )
 
     assert_condition(
-        "iniciar la cotización" not in text,
-        "No debe reiniciar cotización.",
+        "iniciar la cotizaciÃ³n" not in text,
+        "No debe reiniciar cotizaciÃ³n.",
     )
 
     clear_session(session_id)
@@ -149,23 +149,23 @@ def test_quote_received_followup() -> None:
 
 def test_quote_reviewed_followup() -> None:
     print("\n" + "#" * 70)
-    print("CASO 3: Ya la revisé")
+    print("CASO 3: Ya la revisÃ©")
     print("#" * 70)
 
     session_id = prepare_completed_quote_flow()
 
     response = process_message(
-        "Ya la revisé",
+        "Ya la revisÃ©",
         session_id=session_id,
     )
 
     text = response_text(response)
 
-    print_response("RESPUESTA YA LA REVISÉ", response)
+    print_response("RESPUESTA YA LA REVISÃ‰", response)
 
     assert_condition(
-        "continuamos sobre la cotización enviada" in text,
-        "Debe manejar 'ya la revisé' como seguimiento.",
+        "continuamos sobre la cotizaciÃ³n enviada" in text,
+        "Debe manejar 'ya la revisÃ©' como seguimiento.",
     )
 
     assert_condition(
@@ -178,7 +178,7 @@ def test_quote_reviewed_followup() -> None:
 
 def test_new_quote_still_works() -> None:
     print("\n" + "#" * 70)
-    print("CASO 4: Quiero cotizar sigue iniciando cotización")
+    print("CASO 4: Quiero cotizar sigue iniciando cotizaciÃ³n")
     print("#" * 70)
 
     r1 = process_message("busco el 300203")
@@ -191,11 +191,11 @@ def test_new_quote_still_works() -> None:
 
     text = response_text(response)
 
-    print_response("RESPUESTA INICIO COTIZACIÓN", response)
+    print_response("RESPUESTA INICIO COTIZACIÃ“N", response)
 
     assert_condition(
-        "iniciar la cotización" in text,
-        "Debe seguir funcionando el inicio normal de cotización.",
+        "iniciar la cotizaciÃ³n" in text,
+        "Debe seguir funcionando el inicio normal de cotizaciÃ³n.",
     )
 
     clear_session(session_id)
@@ -218,8 +218,9 @@ def main() -> None:
     test_quote_reviewed_followup()
     test_new_quote_still_works()
 
-    print("\nFIN TEST COMMERCIAL QUOTE FOLLOWUP ✅")
+    print("\nFIN TEST COMMERCIAL QUOTE FOLLOWUP âœ…")
 
 
 if __name__ == "__main__":
     main()
+

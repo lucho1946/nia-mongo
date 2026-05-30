@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # test_document_store_retriever.py
 # ============================================================
 # Prueba aislada del retriever documental desde MongoDB.
@@ -12,7 +12,7 @@
 # NO toca:
 # - nia_orchestrator.py
 # - products_catalog
-# - flujo conversacional de producción
+# - flujo conversacional de producciÃ³n
 # ============================================================
 
 from __future__ import annotations
@@ -30,22 +30,22 @@ from retrieval.document_store_retriever import (
 
 
 # ============================================================
-# CONFIGURACIÓN
+# CONFIGURACIÃ“N
 # ============================================================
 
 SOURCE_TYPE = "nia_os"
 
 TEST_QUERIES = [
     "reglas para no inventar productos",
-    "cómo consultar productos en la API",
-    "qué hace module_vision_archivos",
-    "memoria contextual de la conversación",
-    "cotización precio disponibilidad",
+    "cÃ³mo consultar productos en la API",
+    "quÃ© hace module_vision_archivos",
+    "memoria contextual de la conversaciÃ³n",
+    "cotizaciÃ³n precio disponibilidad",
 ]
 
 
 # ============================================================
-# VALIDACIÓN
+# VALIDACIÃ“N
 # ============================================================
 
 def validate_environment() -> bool:
@@ -53,8 +53,8 @@ def validate_environment() -> bool:
     Valida que exista MONGO_CONNECTION_STRING.
     """
     if not os.getenv("MONGO_CONNECTION_STRING"):
-        print("ERROR: No se encontró MONGO_CONNECTION_STRING en el entorno.")
-        print("Verifica tu archivo .env en la raíz del proyecto.")
+        print("ERROR: No se encontrÃ³ MONGO_CONNECTION_STRING en el entorno.")
+        print("Verifica tu archivo .env en la raÃ­z del proyecto.")
         return False
 
     print("Variable MONGO_CONNECTION_STRING detectada correctamente.")
@@ -62,7 +62,7 @@ def validate_environment() -> bool:
 
 
 # ============================================================
-# IMPRESIÓN
+# IMPRESIÃ“N
 # ============================================================
 
 def print_result(query: str, result: dict, context_result: dict) -> None:
@@ -167,3 +167,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

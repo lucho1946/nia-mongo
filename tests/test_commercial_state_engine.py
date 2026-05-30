@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # test_commercial_state_engine.py
 # ============================================================
 # Prueba del motor de estados comercial.
@@ -6,8 +6,8 @@
 # Objetivo:
 # - Validar el mapeo entre estados internos actuales de NIA
 #   y estados oficiales del Commercial Spine.
-# - Validar cálculo de datos faltantes.
-# - Validar actualización de sesión con:
+# - Validar cÃ¡lculo de datos faltantes.
+# - Validar actualizaciÃ³n de sesiÃ³n con:
 #   commercial_process_state
 #   ultimo_paso
 #   siguiente_paso
@@ -41,7 +41,7 @@ def assert_condition(condition: bool, message: str) -> None:
 
 def build_base_session() -> Dict[str, Any]:
     """
-    Crea una sesión mínima para pruebas del state engine.
+    Crea una sesiÃ³n mÃ­nima para pruebas del state engine.
     """
     return {
         "session_id": "test_state_engine",
@@ -121,7 +121,7 @@ def main() -> None:
         )
 
     # ========================================================
-    # 3. Siguiente paso según estado
+    # 3. Siguiente paso segÃºn estado
     # ========================================================
 
     assert_condition(
@@ -166,13 +166,13 @@ def main() -> None:
     )
 
     assert_condition(
-        "correo o teléfono" in missing,
-        "Si no hay contacto, debe faltar correo o teléfono.",
+        "correo o telÃ©fono" in missing,
+        "Si no hay contacto, debe faltar correo o telÃ©fono.",
     )
 
     assert_condition(
         has_complete_minimum_quote_data(session) is False,
-        "Sin datos no debe estar completa la cotización mínima.",
+        "Sin datos no debe estar completa la cotizaciÃ³n mÃ­nima.",
     )
 
     # ========================================================
@@ -203,16 +203,16 @@ def main() -> None:
 
     assert_condition(
         snapshot["siguiente_paso"] == "preparar_cotizacion",
-        "Después de producto_identificado debe seguir preparar_cotizacion.",
+        "DespuÃ©s de producto_identificado debe seguir preparar_cotizacion.",
     )
 
     assert_condition(
         snapshot["producto_activo_codigo"] == "300203",
-        "Debe conservar código de producto activo.",
+        "Debe conservar cÃ³digo de producto activo.",
     )
 
     # ========================================================
-    # 6. Cotización en proceso con datos parciales
+    # 6. CotizaciÃ³n en proceso con datos parciales
     # ========================================================
 
     session["estado_negociacion"] = "datos_cotizacion_parciales"
@@ -245,17 +245,17 @@ def main() -> None:
     )
 
     assert_condition(
-        "correo o teléfono" in session["datos_faltantes"],
-        "Debe faltar correo o teléfono.",
+        "correo o telÃ©fono" in session["datos_faltantes"],
+        "Debe faltar correo o telÃ©fono.",
     )
 
     assert_condition(
         session["siguiente_paso"] == "esperar_respuesta_cliente",
-        "Después de pedir faltantes debe esperar respuesta del cliente.",
+        "DespuÃ©s de pedir faltantes debe esperar respuesta del cliente.",
     )
 
     # ========================================================
-    # 7. Datos mínimos completos
+    # 7. Datos mÃ­nimos completos
     # ========================================================
 
     session["estado_negociacion"] = "datos_cotizacion_recibidos"
@@ -284,17 +284,17 @@ def main() -> None:
 
     assert_condition(
         session["datos_faltantes"] == [],
-        "Con datos mínimos completos no deben faltar datos.",
+        "Con datos mÃ­nimos completos no deben faltar datos.",
     )
 
     assert_condition(
         session["siguiente_paso"] == "validando_cumplimiento",
-        "Después de cotizacion_lista_para_asesor debe seguir validando_cumplimiento.",
+        "DespuÃ©s de cotizacion_lista_para_asesor debe seguir validando_cumplimiento.",
     )
 
     assert_condition(
         has_complete_minimum_quote_data(session) is True,
-        "Con producto, nombre, empresa y correo debe estar completa la cotización mínima.",
+        "Con producto, nombre, empresa y correo debe estar completa la cotizaciÃ³n mÃ­nima.",
     )
 
     # ========================================================
@@ -311,8 +311,9 @@ def main() -> None:
         "El resumen debe mencionar cotizacion_lista_para_asesor.",
     )
 
-    print("\nFIN TEST COMMERCIAL STATE ENGINE ✅")
+    print("\nFIN TEST COMMERCIAL STATE ENGINE âœ…")
 
 
 if __name__ == "__main__":
     main()
+

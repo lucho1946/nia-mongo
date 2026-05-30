@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # test_file_reader.py
 # ============================================================
 # Prueba aislada del lector de archivos de NIA.
@@ -6,7 +6,7 @@
 # Este test NO toca:
 # - orquestador
 # - memoria
-# - catálogo
+# - catÃ¡logo
 # - MongoDB
 # - Azure
 #
@@ -14,7 +14,7 @@
 # - leer archivos
 # - limpiar texto
 # - dividir en chunks
-# - devolver estructura estándar
+# - devolver estructura estÃ¡ndar
 # ============================================================
 
 from pathlib import Path
@@ -26,10 +26,10 @@ from knowledge.file_reader import (
 
 
 # ============================================================
-# CONFIGURACIÓN DE PRUEBA
+# CONFIGURACIÃ“N DE PRUEBA
 # ============================================================
 
-# Cambia esta ruta para probar un archivo específico.
+# Cambia esta ruta para probar un archivo especÃ­fico.
 # Ejemplos:
 # FILE_TO_TEST = "knowledge/nia_os/module_index.json"
 # FILE_TO_TEST = "knowledge/nia_os/modules/module_vision_archivos.json"
@@ -40,12 +40,12 @@ FOLDER_TO_TEST = "knowledge/nia_os"
 
 
 # ============================================================
-# UTILIDADES DE IMPRESIÓN
+# UTILIDADES DE IMPRESIÃ“N
 # ============================================================
 
 def print_file_result(result: dict) -> None:
     """
-    Imprime resumen legible de un archivo leído.
+    Imprime resumen legible de un archivo leÃ­do.
     """
     print("\n" + "=" * 60)
     print("NIA FILE READER TEST")
@@ -79,7 +79,7 @@ def print_file_result(result: dict) -> None:
 
 def print_folder_result(result: dict) -> None:
     """
-    Imprime resumen legible de una carpeta leída.
+    Imprime resumen legible de una carpeta leÃ­da.
     """
     print("\n" + "=" * 60)
     print("NIA FOLDER READER TEST")
@@ -97,7 +97,7 @@ def print_folder_result(result: dict) -> None:
 
     files = result.get("files", [])
 
-    print("\nARCHIVOS LEÍDOS:")
+    print("\nARCHIVOS LEÃDOS:")
     for item in files:
         metadata = item.get("metadata", {}) or {}
         print(
@@ -122,7 +122,7 @@ def print_folder_result(result: dict) -> None:
 
 def main() -> None:
     """
-    Ejecuta pruebas básicas.
+    Ejecuta pruebas bÃ¡sicas.
     """
     file_path = Path(FILE_TO_TEST)
     folder_path = Path(FOLDER_TO_TEST)
@@ -138,3 +138,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

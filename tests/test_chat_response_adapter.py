@@ -1,18 +1,18 @@
-# ============================================================
+﻿# ============================================================
 # test_chat_response_adapter.py
 # ============================================================
-# Prueba aislada de la migración /chat → orquestador.
+# Prueba aislada de la migraciÃ³n /chat â†’ orquestador.
 #
 # Valida:
 # - Adapter devuelve ChatResponse.
 # - El contrato del frontend se mantiene.
 # - Consultas internas no devuelven productos.
-# - Código exacto funciona aunque venga dentro de frase.
-# - La memoria anterior no contamina una búsqueda por código.
-# - Saludos puros no disparan búsqueda técnica.
+# - CÃ³digo exacto funciona aunque venga dentro de frase.
+# - La memoria anterior no contamina una bÃºsqueda por cÃ³digo.
+# - Saludos puros no disparan bÃºsqueda tÃ©cnica.
 # - Consulta natural de variador se detecta correctamente.
-# - Torquímetro + 200nm no se trata como código.
-# - Continuidad comercial: "Envíame una cotización" usa último producto.
+# - TorquÃ­metro + 200nm no se trata como cÃ³digo.
+# - Continuidad comercial: "EnvÃ­ame una cotizaciÃ³n" usa Ãºltimo producto.
 # ============================================================
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from orchestration.chat_response_adapter import process_chat_request
 
 def print_response(title: str, response: ChatResponse) -> None:
     """
-    Imprime respuesta compacta para revisión humana.
+    Imprime respuesta compacta para revisiÃ³n humana.
     """
     print("\n" + "=" * 70)
     print(title)
@@ -48,6 +48,25 @@ def print_response(title: str, response: ChatResponse) -> None:
                 f"{producto.marca} | {producto.precio}"
             )
 
+def normalize_text(value: str) -> str:
+    """
+    Normaliza texto para comparaciones en tests.
+
+    Evita que una tilde o una diferencia de codificación rompa
+    una validación que conceptualmente está correcta.
+    """
+    import unicodedata
+
+    value = "" if value is None else str(value)
+    value = value.lower().strip()
+
+    value = "".join(
+        char
+        for char in unicodedata.normalize("NFKD", value)
+        if not unicodedata.combining(char)
+    )
+
+    return value
 
 def assert_condition(condition: bool, message: str) -> None:
     """
@@ -84,11 +103,11 @@ def main() -> None:
     )
     assert_condition(
         "Trabajo con reglas internas" in internal_response.respuesta,
-        "Consulta interna debe devolver respuesta pública segura.",
+        "Consulta interna debe devolver respuesta pÃºblica segura.",
     )
 
     # --------------------------------------------------------
-    # Caso 2: código exacto puro
+    # Caso 2: cÃ³digo exacto puro
     # --------------------------------------------------------
     code_request = ChatRequest(
         mensaje="P382280",
@@ -97,15 +116,15 @@ def main() -> None:
     )
 
     code_response = process_chat_request(code_request)
-    print_response("CASO 2 - Código exacto puro", code_response)
+    print_response("CASO 2 - CÃ³digo exacto puro", code_response)
 
     assert_condition(
         isinstance(code_response, ChatResponse),
-        "La respuesta de código no es ChatResponse.",
+        "La respuesta de cÃ³digo no es ChatResponse.",
     )
     assert_condition(
         len(code_response.productos) >= 1,
-        "Código exacto P382280 debe devolver producto.",
+        "CÃ³digo exacto P382280 debe devolver producto.",
     )
     assert_condition(
         code_response.productos[0].codigo.upper() == "P382280",
@@ -130,7 +149,7 @@ def main() -> None:
     )
     assert_condition(
         saludo_response.estado in {"recopilando", "completado"},
-        "Estado inválido en saludo.",
+        "Estado invÃ¡lido en saludo.",
     )
 
     # --------------------------------------------------------
@@ -164,7 +183,7 @@ def main() -> None:
     )
 
     # --------------------------------------------------------
-    # Caso 5: memoria contaminada + código dentro de frase
+    # Caso 5: memoria contaminada + cÃ³digo dentro de frase
     # --------------------------------------------------------
     primera = process_chat_request(
         ChatRequest(
@@ -183,7 +202,7 @@ def main() -> None:
         )
     )
 
-    print_response("CASO 5 - Código dentro de frase limpia memoria", segunda)
+    print_response("CASO 5 - CÃ³digo dentro de frase limpia memoria", segunda)
 
     assert_condition(
         len(segunda.productos) >= 1,
@@ -191,11 +210,11 @@ def main() -> None:
     )
     assert_condition(
         segunda.productos[0].codigo.upper() == "P382280",
-        "La búsqueda por frase debe devolver P382280.",
+        "La bÃºsqueda por frase debe devolver P382280.",
     )
 
     # --------------------------------------------------------
-    # Caso 6: torquímetro + medida no debe tratar 200nm como código
+    # Caso 6: torquÃ­metro + medida no debe tratar 200nm como cÃ³digo
     # --------------------------------------------------------
     torquimetro_1 = process_chat_request(
         ChatRequest(
@@ -214,19 +233,19 @@ def main() -> None:
         )
     )
 
-    print_response("CASO 6 - Torquímetro con medida 200nm", torquimetro_2)
+    print_response("CASO 6 - TorquÃ­metro con medida 200nm", torquimetro_2)
 
     assert_condition(
-        "Encontré el código" not in torquimetro_2.respuesta,
-        "200nm no debe tratarse como código de producto.",
+        "EncontrÃ© el cÃ³digo" not in torquimetro_2.respuesta,
+        "200nm no debe tratarse como cÃ³digo de producto.",
     )
     assert_condition(
         all(producto.codigo.upper() != "P382280" for producto in torquimetro_2.productos),
-        "Torquímetro 200nm no debe devolver P382280.",
+        "TorquÃ­metro 200nm no debe devolver P382280.",
     )
 
     # --------------------------------------------------------
-    # Caso 7: continuidad comercial con último producto seleccionado
+    # Caso 7: continuidad comercial con Ãºltimo producto seleccionado
     # --------------------------------------------------------
     flujo_1 = process_chat_request(
         ChatRequest(
@@ -256,7 +275,7 @@ def main() -> None:
 
     flujo_4 = process_chat_request(
         ChatRequest(
-            mensaje="Quiero cotizar: Anemometros digitales portatiles Indicadores (Código: 300203)",
+            mensaje="Quiero cotizar: Anemometros digitales portatiles Indicadores (CÃ³digo: 300203)",
             session_id=flujo_3.session_id,
             canal="web",
             cliente_id="test_cotizacion",
@@ -272,45 +291,45 @@ def main() -> None:
         )
     )
 
-    print_response("CASO 7 - Continuidad comercial cotización", flujo_5)
+    print_response("CASO 7 - Continuidad comercial cotizaciÃ³n", flujo_5)
 
     assert_condition(
         len(flujo_5.productos) >= 1,
-        "La continuidad comercial debe devolver el último producto seleccionado.",
+        "La continuidad comercial debe devolver el Ãºltimo producto seleccionado.",
     )
     assert_condition(
         flujo_5.productos[0].codigo == "300203",
-        "La cotización debe continuar con el producto 300203.",
+        "La cotizaciÃ³n debe continuar con el producto 300203.",
     )
     assert_condition(
         "Medidor De Octanaje" not in flujo_5.respuesta,
-        "No debe buscar productos nuevos por la frase cotización.",
+        "No debe buscar productos nuevos por la frase cotizaciÃ³n.",
     )
     assert_condition(
         "Detector de metales" not in flujo_5.respuesta,
-        "No debe devolver detector de metales en continuidad de cotización.",
+        "No debe devolver detector de metales en continuidad de cotizaciÃ³n.",
     )
     assert_condition(
         "Alcoholimetro" not in flujo_5.respuesta,
-        "No debe devolver alcoholímetro en continuidad de cotización.",
+        "No debe devolver alcoholÃ­metro en continuidad de cotizaciÃ³n.",
     )
     assert_condition(
-        "cotización" in flujo_5.respuesta.lower()
-        or "cotizacion" in flujo_5.respuesta.lower(),
-        "La respuesta debe hablar de cotización.",
+        "cotizacion" in normalize_text(flujo_5.respuesta)
+        or "cotizacion" in normalize_text(flujo_5.respuesta),
+        "La respuesta debe hablar de cotizaciÃ³n.",
     )
     
     # ============================================================
-    # CASO 8 - Contexto activo: sensor fotoeléctrico
+    # CASO 8 - Contexto activo: sensor fotoelÃ©ctrico
     # ============================================================
     # Objetivo:
-    # Validar que NIA recuerde la última pregunta hecha.
+    # Validar que NIA recuerde la Ãºltima pregunta hecha.
     #
     # Flujo esperado:
     # Usuario: necesito un sensor industrial
     # NIA: pregunta subtipo
     # Usuario: sensor fotoelectrico
-    # NIA: NO debe repetir "¿Qué tipo específico necesitas?"
+    # NIA: NO debe repetir "Â¿QuÃ© tipo especÃ­fico necesitas?"
     # ============================================================
 
     sensor_1 = process_chat_request(
@@ -330,10 +349,10 @@ def main() -> None:
         )
     )
 
-    print_response("CASO 8 - Sensor fotoeléctrico responde subtipo pendiente", sensor_2)
+    print_response("CASO 8 - Sensor fotoelÃ©ctrico responde subtipo pendiente", sensor_2)
 
     assert_condition(
-        "¿Qué tipo específico necesitas?" not in sensor_2.respuesta,
+        "Â¿QuÃ© tipo especÃ­fico necesitas?" not in sensor_2.respuesta,
         "NIA no debe repetir la pregunta de subtipo cuando el usuario responde sensor fotoelectrico.",
     )
 
@@ -353,11 +372,11 @@ def main() -> None:
 )
 
     # ============================================================
-    # CASO 9 - Solicitud genérica no pregunta marca primero
+    # CASO 9 - Solicitud genÃ©rica no pregunta marca primero
     # ============================================================
     # Objetivo:
     # Validar que si el usuario solo dice "necesito un producto",
-    # NIA pregunte qué producto busca o para qué aplicación,
+    # NIA pregunte quÃ© producto busca o para quÃ© aplicaciÃ³n,
     # en vez de preguntar marca.
     # ============================================================
 
@@ -369,7 +388,7 @@ def main() -> None:
         )
     )
 
-    print_response("CASO 9 - Producto genérico pregunta producto/aplicación", generico_1)
+    print_response("CASO 9 - Producto genÃ©rico pregunta producto/aplicaciÃ³n", generico_1)
 
     assert_condition(
         "marca" not in generico_1.respuesta.lower(),
@@ -378,21 +397,21 @@ def main() -> None:
 
     assert_condition(
         "producto" in generico_1.respuesta.lower()
-        or "aplicación" in generico_1.respuesta.lower()
+        or "aplicaciÃ³n" in generico_1.respuesta.lower()
         or "aplicacion" in generico_1.respuesta.lower(),
-        "NIA debe preguntar qué producto busca o para qué aplicación lo necesita.",
+        "NIA debe preguntar quÃ© producto busca o para quÃ© aplicaciÃ³n lo necesita.",
     )
     
         # ============================================================
-    # CASO 10 - Cotización con código explícito desde lista
+    # CASO 10 - CotizaciÃ³n con cÃ³digo explÃ­cito desde lista
     # ============================================================
     # Objetivo:
     # Si NIA muestra varias opciones y el usuario elige una card
-    # con código explícito, ese código debe mandar sobre el primer
+    # con cÃ³digo explÃ­cito, ese cÃ³digo debe mandar sobre el primer
     # producto recomendado.
     #
     # Bug corregido:
-    # Antes el usuario elegía P256146, pero NIA cotizaba P101722.
+    # Antes el usuario elegÃ­a P256146, pero NIA cotizaba P101722.
     # ============================================================
 
     sensor_lista = process_chat_request(
@@ -407,7 +426,7 @@ def main() -> None:
         ChatRequest(
             mensaje=(
                 "Quiero cotizar: Sensor fotoelectrico emisor receptor "
-                "1 Metro 12-24vdc pnp (Código: P256146)"
+                "1 Metro 12-24vdc pnp (CÃ³digo: P256146)"
             ),
             session_id=sensor_lista.session_id,
             canal="web",
@@ -416,35 +435,35 @@ def main() -> None:
     )
 
     print_response(
-        "CASO 10 - Cotización usa código explícito P256146",
+        "CASO 10 - CotizaciÃ³n usa cÃ³digo explÃ­cito P256146",
         sensor_cotizacion,
     )
 
     assert_condition(
         "P256146" not in sensor_cotizacion.respuesta,
-        "La respuesta visible no debe mostrar el código del producto seleccionado.",
+        "La respuesta visible no debe mostrar el cÃ³digo del producto seleccionado.",
     )
 
     assert_condition(
         len(sensor_cotizacion.productos) >= 1,
-        "NIA debe devolver el producto seleccionado para cotización.",
+        "NIA debe devolver el producto seleccionado para cotizaciÃ³n.",
     )
 
     assert_condition(
         sensor_cotizacion.productos[0].codigo == "P256146",
-        "El primer producto de la cotización debe ser P256146, no el primer resultado anterior.",
+        "El primer producto de la cotizaciÃ³n debe ser P256146, no el primer resultado anterior.",
     )
 
     # ============================================================
-    # CASO 11 - Código exacto conserva producto activo para cotización
+    # CASO 11 - CÃ³digo exacto conserva producto activo para cotizaciÃ³n
     # ============================================================
     # Objetivo:
-    # Si el usuario busca un código exacto y luego dice:
+    # Si el usuario busca un cÃ³digo exacto y luego dice:
     # "quiero cotizar este producto", NIA debe usar ese producto.
     #
     # Bug corregido:
-    # Antes NIA respondía: ¿Qué producto buscas?
-    # porque la rama de código exacto no persistía la sesión.
+    # Antes NIA respondÃ­a: Â¿QuÃ© producto buscas?
+    # porque la rama de cÃ³digo exacto no persistÃ­a la sesiÃ³n.
     # ============================================================
 
     exacto_1 = process_chat_request(
@@ -474,33 +493,33 @@ def main() -> None:
     )
 
     print_response(
-        "CASO 11 - Código exacto conserva producto activo para cotización",
+        "CASO 11 - CÃ³digo exacto conserva producto activo para cotizaciÃ³n",
         exacto_3,
     )
 
     assert_condition(
         "300203" not in exacto_3.respuesta,
-        "La respuesta visible no debe mostrar el código del producto seleccionado.",
+        "La respuesta visible no debe mostrar el cÃ³digo del producto seleccionado.",
     )
     
     assert_condition(
         len(exacto_3.productos) >= 1,
-        "NIA debe devolver el producto activo 300203 en la cotización.",
+        "NIA debe devolver el producto activo 300203 en la cotizaciÃ³n.",
     )
 
     assert_condition(
         exacto_3.productos[0].codigo == "300203",
-        "El producto activo de la cotización debe ser 300203.",
+        "El producto activo de la cotizaciÃ³n debe ser 300203.",
     )
     
         # ============================================================
     # CASO 12 - Captura datos comerciales parciales
     # ============================================================
     # Objetivo:
-    # Después de iniciar cotización, si el usuario entrega nombre,
+    # DespuÃ©s de iniciar cotizaciÃ³n, si el usuario entrega nombre,
     # empresa y correo, NIA debe guardar esos datos y NO volver
     # a pedirlos. Si falta contacto alterno no es obligatorio,
-    # porque correo o teléfono son medio de contacto válido.
+    # porque correo o telÃ©fono son medio de contacto vÃ¡lido.
     # ============================================================
 
     cotizacion_base = process_chat_request(
@@ -530,7 +549,7 @@ def main() -> None:
     )
 
     print_response(
-        "CASO 12 - Captura datos comerciales para cotización",
+        "CASO 12 - Captura datos comerciales para cotizaciÃ³n",
         datos_cliente,
     )
 
@@ -541,7 +560,7 @@ def main() -> None:
 
     assert_condition(
         "correo" in datos_cliente.respuesta.lower(),
-        "NIA debe confirmar que recibió el correo o los datos comerciales.",
+        "NIA debe confirmar que recibiÃ³ el correo o los datos comerciales.",
     )
 
     assert_condition(
@@ -559,7 +578,7 @@ def main() -> None:
     # ============================================================
     # Objetivo:
     # Si el usuario solo entrega nombre, NIA debe pedir empresa
-    # y correo o teléfono, no volver a pedir nombre.
+    # y correo o telÃ©fono, no volver a pedir nombre.
     # ============================================================
 
     cotizacion_base_2 = process_chat_request(
@@ -605,13 +624,14 @@ def main() -> None:
 
     assert_condition(
         "correo" in datos_incompletos.respuesta.lower()
-        or "teléfono" in datos_incompletos.respuesta.lower()
+        or "telÃ©fono" in datos_incompletos.respuesta.lower()
         or "telefono" in datos_incompletos.respuesta.lower(),
-        "NIA debe pedir correo o teléfono si no hay medio de contacto.",
+        "NIA debe pedir correo o telÃ©fono si no hay medio de contacto.",
     )
 
-    print("\nFIN TEST CHAT RESPONSE ADAPTER ✅")
+    print("\nFIN TEST CHAT RESPONSE ADAPTER âœ…")
 
 
 if __name__ == "__main__":
     main()
+

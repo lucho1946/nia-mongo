@@ -1,13 +1,13 @@
-# ============================================================
+﻿# ============================================================
 # test_mongo_session_store.py
 # ============================================================
 # Prueba de persistencia de sesiones NIA en MongoDB.
 #
 # Objetivo:
-# - Crear sesión.
+# - Crear sesiÃ³n.
 # - Guardarla en RAM y Mongo.
 # - Limpiar RAM para simular otro worker de Azure.
-# - Recuperar la sesión desde MongoDB.
+# - Recuperar la sesiÃ³n desde MongoDB.
 # - Validar que el contexto y producto activo sobreviven.
 # ============================================================
 
@@ -73,7 +73,7 @@ def main() -> None:
 
     assert_condition(
         session_id in _SESSIONS,
-        "La sesión debe guardarse inicialmente en RAM.",
+        "La sesiÃ³n debe guardarse inicialmente en RAM.",
     )
 
     # Simula otro worker de Azure:
@@ -86,7 +86,7 @@ def main() -> None:
 
     assert_condition(
         loaded is not None,
-        "La sesión debe recuperarse desde MongoDB después de limpiar RAM.",
+        "La sesiÃ³n debe recuperarse desde MongoDB despuÃ©s de limpiar RAM.",
     )
 
     assert_condition(
@@ -96,19 +96,20 @@ def main() -> None:
 
     assert_condition(
         loaded.get("last_selected_product_code") == "300203",
-        "La sesión debe conservar last_selected_product_code=300203.",
+        "La sesiÃ³n debe conservar last_selected_product_code=300203.",
     )
 
     assert_condition(
         loaded.get("estado_negociacion") == "producto_seleccionado",
-        "La sesión debe conservar estado_negociacion=producto_seleccionado.",
+        "La sesiÃ³n debe conservar estado_negociacion=producto_seleccionado.",
     )
 
     # Limpieza final.
     clear_session(session_id)
 
-    print("\nFIN TEST MONGO SESSION STORE ✅")
+    print("\nFIN TEST MONGO SESSION STORE âœ…")
 
 
 if __name__ == "__main__":
     main()
+

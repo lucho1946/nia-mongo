@@ -1,22 +1,22 @@
-# ============================================================
+﻿# ============================================================
 # test_commercial_handoff_flow.py
 # ============================================================
 # OBJETIVO:
 # Validar que NIA construye un handoff comercial estructurado
 # cuando llega a estados accionables para asesor:
 #
-# - cotización lista para asesor
+# - cotizaciÃ³n lista para asesor
 # - proforma lista para asesor
 #
 # Este test asegura que:
-# 1. Producto exacto inicia cotización automáticamente.
-# 2. La captura de datos comerciales genera handoff tipo cotización.
-# 3. El seguimiento de cotización conserva contexto.
-# 4. La intención de compra activa proforma.
+# 1. Producto exacto inicia cotizaciÃ³n automÃ¡ticamente.
+# 2. La captura de datos comerciales genera handoff tipo cotizaciÃ³n.
+# 3. El seguimiento de cotizaciÃ³n conserva contexto.
+# 4. La intenciÃ³n de compra activa proforma.
 # 5. La captura de NIT genera handoff tipo proforma.
 # 6. La proforma conserva precio/disponibilidad originales.
 #
-# Alineación con Don Andrés:
+# AlineaciÃ³n con Don AndrÃ©s:
 # - NIA no solo conversa.
 # - NIA debe dejar una oportunidad comercial clara y accionable.
 # - La oportunidad debe incluir producto, cliente, contacto,
@@ -38,10 +38,10 @@ def load_local_env():
 
     Necesario para:
     - MONGO_CONNECTION_STRING
-    - acceso a catálogo real
+    - acceso a catÃ¡logo real
     - persistencia de sesiones
     """
-    env_path = Path(__file__).resolve().parent / ".env"
+    env_path = Path(__file__).resolve().parents[1] / ".env"
 
     if not env_path.exists():
         print("NO EXISTE .env EN:", env_path)
@@ -94,6 +94,26 @@ def response_text(response: dict) -> str:
     return response.get("response") or response.get("respuesta") or ""
 
 
+
+def normalize_text(value: str) -> str:
+    """
+    Normaliza texto para comparaciones en tests.
+    Evita fallos por tildes o codificación de consola.
+    """
+    import unicodedata
+
+    value = "" if value is None else str(value)
+    value = value.lower().strip()
+
+    value = "".join(
+        char
+        for char in unicodedata.normalize("NFKD", value)
+        if not unicodedata.combining(char)
+    )
+
+    return value
+
+
 def assert_condition(condition: bool, message: str):
     """
     Assertion con mensaje claro.
@@ -118,7 +138,7 @@ def show_handoff(label: str, handoff: dict):
 def run_full_handoff_flow():
     """
     Ejecuta el flujo completo:
-    producto exacto -> datos comerciales -> cotización handoff
+    producto exacto -> datos comerciales -> cotizaciÃ³n handoff
     -> seguimiento -> compra -> NIT -> proforma handoff.
     """
     r1 = process_message("busco el 300203")
@@ -133,7 +153,7 @@ def run_full_handoff_flow():
     handoff_quote = session_after_quote.get("commercial_handoff") or {}
 
     r3 = process_message(
-        "Ya recibí la cotización",
+        "Ya recibÃ­ la cotizaciÃ³n",
         session_id=session_id,
     )
 
@@ -168,11 +188,11 @@ def run_full_handoff_flow():
 
 # ============================================================
 # CASO 1
-# Producto exacto inicia cotización automáticamente
+# Producto exacto inicia cotizaciÃ³n automÃ¡ticamente
 # ============================================================
 
 def run_case_exact_product_starts_quote():
-    print_case("CASO 1: producto exacto inicia cotización automática")
+    print_case("CASO 1: producto exacto inicia cotizaciÃ³n automÃ¡tica")
 
     data = run_full_handoff_flow()
     r1 = data["responses"]["r1"]
@@ -181,13 +201,13 @@ def run_case_exact_product_starts_quote():
     show_response("RESPUESTA PRODUCTO EXACTO", r1)
 
     assert_condition(
-        "Encontré el producto exacto" in response_text(r1),
+        "encontre el producto exacto" in normalize_text(response_text(r1)),
         "Debe encontrar el producto exacto.",
     )
 
     assert_condition(
-        "Para continuar con la cotización" in response_text(r1),
-        "Después de encontrar producto exacto debe pedir datos para cotización.",
+        "para continuar con la cotizacion" in normalize_text(response_text(r1)),
+        "DespuÃ©s de encontrar producto exacto debe pedir datos para cotizaciÃ³n.",
     )
 
     assert_condition(
@@ -197,7 +217,7 @@ def run_case_exact_product_starts_quote():
 
     assert_condition(
         session_after_quote.get("commercial_handoff") is not None,
-        "Después de capturar datos comerciales debe existir commercial_handoff.",
+        "DespuÃ©s de capturar datos comerciales debe existir commercial_handoff.",
     )
 
     clear_session(data["session_id"])
@@ -205,35 +225,35 @@ def run_case_exact_product_starts_quote():
 
 # ============================================================
 # CASO 2
-# Handoff de cotización
+# Handoff de cotizaciÃ³n
 # ============================================================
 
 def run_case_quote_handoff():
-    print_case("CASO 2: handoff tipo cotización")
+    print_case("CASO 2: handoff tipo cotizaciÃ³n")
 
     data = run_full_handoff_flow()
     handoff = data["handoff_quote"]
 
-    show_handoff("HANDOFF COTIZACIÓN", handoff)
+    show_handoff("HANDOFF COTIZACIÃ“N", handoff)
 
     assert_condition(
         handoff.get("tipo") == "cotizacion",
-        "El handoff después de datos comerciales debe ser tipo cotizacion.",
+        "El handoff despuÃ©s de datos comerciales debe ser tipo cotizacion.",
     )
 
     assert_condition(
         handoff.get("estado") == "lista_para_asesor",
-        "El handoff de cotización debe quedar lista_para_asesor.",
+        "El handoff de cotizaciÃ³n debe quedar lista_para_asesor.",
     )
 
     assert_condition(
         handoff.get("siguiente_paso") == "generar_o_enviar_cotizacion",
-        "El siguiente paso de cotización debe ser generar_o_enviar_cotizacion.",
+        "El siguiente paso de cotizaciÃ³n debe ser generar_o_enviar_cotizacion.",
     )
 
     assert_condition(
         handoff.get("producto_codigo") == "300203",
-        "La cotización debe conservar producto 300203.",
+        "La cotizaciÃ³n debe conservar producto 300203.",
     )
 
     assert_condition(
@@ -253,12 +273,12 @@ def run_case_quote_handoff():
 
     assert_condition(
         handoff.get("producto_precio") == "$475,114 COP",
-        "Debe conservar precio original en cotización.",
+        "Debe conservar precio original en cotizaciÃ³n.",
     )
 
     assert_condition(
-        handoff.get("producto_disponibilidad") == "Disponible en Bogotá (6 und)",
-        "Debe conservar disponibilidad original en cotización.",
+        normalize_text(handoff.get("producto_disponibilidad")) == "disponible en bogota (6 und)",
+        "Debe conservar disponibilidad original en cotizaciÃ³n.",
     )
 
     assert_condition(
@@ -306,7 +326,7 @@ def run_case_proforma_handoff():
 
     assert_condition(
         handoff.get("tipo") == "proforma",
-        "El handoff después de capturar NIT debe ser tipo proforma.",
+        "El handoff despuÃ©s de capturar NIT debe ser tipo proforma.",
     )
 
     assert_condition(
@@ -370,12 +390,12 @@ def run_case_proforma_preserves_product_commercial_info():
     handoff_quote = data["handoff_quote"]
     handoff_proforma = data["handoff_proforma"]
 
-    show_handoff("HANDOFF COTIZACIÓN", handoff_quote)
+    show_handoff("HANDOFF COTIZACIÃ“N", handoff_quote)
     show_handoff("HANDOFF PROFORMA", handoff_proforma)
 
     assert_condition(
         handoff_quote.get("producto_precio") == "$475,114 COP",
-        "La cotización debe tener precio original.",
+        "La cotizaciÃ³n debe tener precio original.",
     )
 
     assert_condition(
@@ -384,12 +404,12 @@ def run_case_proforma_preserves_product_commercial_info():
     )
 
     assert_condition(
-        handoff_quote.get("producto_disponibilidad") == "Disponible en Bogotá (6 und)",
-        "La cotización debe tener disponibilidad original.",
+        normalize_text(handoff_quote.get("producto_disponibilidad")) == "disponible en bogota (6 und)",
+        "La cotizaciÃ³n debe tener disponibilidad original.",
     )
 
     assert_condition(
-        handoff_proforma.get("producto_disponibilidad") == "Disponible en Bogotá (6 und)",
+        normalize_text(handoff_proforma.get("producto_disponibilidad")) == "disponible en bogota (6 und)",
         "La proforma debe conservar la disponibilidad original.",
     )
 
@@ -408,11 +428,11 @@ def run_case_proforma_preserves_product_commercial_info():
 
 # ============================================================
 # CASO 5
-# Handoff con teléfono del canal
+# Handoff con telÃ©fono del canal
 # ============================================================
 
 def run_case_channel_phone_quote_handoff():
-    print_case("CASO 5: handoff con teléfono del canal")
+    print_case("CASO 5: handoff con telÃ©fono del canal")
 
     r1 = process_message(
         "busco el 300203",
@@ -424,12 +444,12 @@ def run_case_channel_phone_quote_handoff():
     session = get_session(session_id) or {}
     handoff = session.get("commercial_handoff") or {}
 
-    show_response("RESPUESTA PRODUCTO CON TELÉFONO CANAL", r1)
-    show_handoff("HANDOFF TELÉFONO CANAL", handoff)
+    show_response("RESPUESTA PRODUCTO CON TELÃ‰FONO CANAL", r1)
+    show_handoff("HANDOFF TELÃ‰FONO CANAL", handoff)
 
     assert_condition(
         session.get("channel_contact_phone") == "3001234567",
-        "Debe extraer el teléfono del canal.",
+        "Debe extraer el telÃ©fono del canal.",
     )
 
     assert_condition(
@@ -439,12 +459,12 @@ def run_case_channel_phone_quote_handoff():
 
     assert_condition(
         handoff.get("tipo") == "cotizacion",
-        "Con teléfono de canal debe crear handoff tipo cotización.",
+        "Con telÃ©fono de canal debe crear handoff tipo cotizaciÃ³n.",
     )
 
     assert_condition(
         handoff.get("telefono") == "3001234567",
-        "El handoff debe guardar el teléfono del canal.",
+        "El handoff debe guardar el telÃ©fono del canal.",
     )
 
     assert_condition(
@@ -454,22 +474,22 @@ def run_case_channel_phone_quote_handoff():
 
     assert_condition(
         handoff.get("producto_precio") == "$475,114 COP",
-        "El handoff con teléfono del canal debe conservar precio original.",
+        "El handoff con telÃ©fono del canal debe conservar precio original.",
     )
 
     assert_condition(
-        handoff.get("producto_disponibilidad") == "Disponible en Bogotá (6 und)",
-        "El handoff con teléfono del canal debe conservar disponibilidad original.",
+        normalize_text(handoff.get("producto_disponibilidad")) == "disponible en bogota (6 und)",
+        "El handoff con telÃ©fono del canal debe conservar disponibilidad original.",
     )
 
     assert_condition(
         handoff.get("producto_precio") != "Consultarnos",
-        "El handoff con teléfono del canal no debe degradar precio.",
+        "El handoff con telÃ©fono del canal no debe degradar precio.",
     )
 
     assert_condition(
         handoff.get("producto_disponibilidad") != "Consultar disponibilidad",
-        "El handoff con teléfono del canal no debe degradar disponibilidad.",
+        "El handoff con telÃ©fono del canal no debe degradar disponibilidad.",
     )
 
     clear_session(session_id)
@@ -492,8 +512,9 @@ def main():
     run_case_proforma_preserves_product_commercial_info()
     run_case_channel_phone_quote_handoff()
 
-    print("\nFIN TEST COMMERCIAL HANDOFF FLOW ✅")
+    print("\nFIN TEST COMMERCIAL HANDOFF FLOW âœ…")
 
 
 if __name__ == "__main__":
     main()
+

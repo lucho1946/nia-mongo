@@ -1,13 +1,13 @@
-# ============================================================
+﻿# ============================================================
 # test_brain.py
 # ============================================================
 # Prueba conversacional limpia del cerebro de NIA.
 #
 # Este test valida:
 # - memoria conversacional
-# - intención
-# - preguntas técnicas
-# - búsqueda por catálogo
+# - intenciÃ³n
+# - preguntas tÃ©cnicas
+# - bÃºsqueda por catÃ¡logo
 # - compatibilidad de resultados
 # - respuesta final
 #
@@ -19,7 +19,7 @@
 from dotenv import load_dotenv
 
 # Cargar variables de entorno antes de importar el orquestador.
-# Esto es importante para que MongoDB y otros servicios estén disponibles.
+# Esto es importante para que MongoDB y otros servicios estÃ©n disponibles.
 load_dotenv()
 
 from orchestration.nia_orchestrator import process_message
@@ -31,7 +31,7 @@ from orchestration.nia_orchestrator import process_message
 
 SCENARIOS = [
     {
-        "title": "ESCENARIO 1 - Sensor de presión",
+        "title": "ESCENARIO 1 - Sensor de presiÃ³n",
         "messages": [
             "necesito un sensor",
             "presion",
@@ -63,13 +63,13 @@ SCENARIOS = [
         ],
     },
     {
-        "title": "ESCENARIO 5 - Código exacto",
+        "title": "ESCENARIO 5 - CÃ³digo exacto",
         "messages": [
             "P382280",
         ],
     },
     {
-        "title": "ESCENARIO 6 - Torquímetro",
+        "title": "ESCENARIO 6 - TorquÃ­metro",
         "messages": [
             "necesito un torquimetro",
             "200nm",
@@ -79,7 +79,7 @@ SCENARIOS = [
 
 
 # ============================================================
-# UTILIDADES DE IMPRESIÓN
+# UTILIDADES DE IMPRESIÃ“N
 # ============================================================
 
 def print_separator():
@@ -99,7 +99,7 @@ def print_products(result: dict):
     print("\nPRODUCTOS:")
 
     for product in cards:
-        codigo = product.get("codigo", "Sin código")
+        codigo = product.get("codigo", "Sin cÃ³digo")
         nombre = product.get("nombre", "Sin nombre")
         marca = product.get("marca", "Sin marca")
 
@@ -111,18 +111,18 @@ def print_response(user_message: str, result: dict):
     Imprime mensaje del usuario y respuesta de NIA.
     """
 
-    print(f"\n👤 USER: {user_message}")
-    print("\n🤖 NIA:")
+    print(f"\nðŸ‘¤ USER: {user_message}")
+    print("\nðŸ¤– NIA:")
     print(result.get("response", "Sin respuesta"))
 
     print_products(result)
 
     if result.get("needs_clarification"):
-        print("\n[modo aclaración]")
+        print("\n[modo aclaraciÃ³n]")
 
 
 # ============================================================
-# EJECUCIÓN DE TEST
+# EJECUCIÃ“N DE TEST
 # ============================================================
 
 def run_tests():
@@ -143,7 +143,7 @@ def run_tests():
                 session_id=session_id,
             )
 
-            # Mantener la misma sesión dentro del escenario.
+            # Mantener la misma sesiÃ³n dentro del escenario.
             session_id = result.get("session_id")
 
             print_response(message, result)
@@ -155,3 +155,4 @@ def run_tests():
 
 if __name__ == "__main__":
     run_tests()
+

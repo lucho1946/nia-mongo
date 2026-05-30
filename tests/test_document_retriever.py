@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # test_document_retriever.py
 # ============================================================
 # Prueba aislada del retriever documental de NIA.
@@ -6,7 +6,7 @@
 # Este test NO toca:
 # - orquestador
 # - memoria conversacional
-# - catálogo de productos
+# - catÃ¡logo de productos
 # - MongoDB
 # - Azure
 #
@@ -25,22 +25,22 @@ from retrieval.document_retriever import (
 
 
 # ============================================================
-# CONFIGURACIÓN DE PRUEBA
+# CONFIGURACIÃ“N DE PRUEBA
 # ============================================================
 
 FOLDER_TO_TEST = "knowledge/nia_os"
 
 TEST_QUERIES = [
-    "qué hace module_vision_archivos",
+    "quÃ© hace module_vision_archivos",
     "reglas para no inventar productos",
-    "cómo consultar productos en la API",
-    "memoria contextual de la conversación",
-    "cotización precio disponibilidad",
+    "cÃ³mo consultar productos en la API",
+    "memoria contextual de la conversaciÃ³n",
+    "cotizaciÃ³n precio disponibilidad",
 ]
 
 
 # ============================================================
-# IMPRESIÓN DE RESULTADOS
+# IMPRESIÃ“N DE RESULTADOS
 # ============================================================
 
 def print_retrieval_result(query: str, result: dict) -> None:
@@ -148,3 +148,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

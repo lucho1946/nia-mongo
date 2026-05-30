@@ -1,7 +1,7 @@
-# ============================================================
+﻿# ============================================================
 # test_dynamic_questions.py
 # ============================================================
-# Prueba aislada del motor dinámico de preguntas.
+# Prueba aislada del motor dinÃ¡mico de preguntas.
 # No toca Mongo.
 # No toca retrieval.
 # No toca orchestrator.
@@ -58,7 +58,7 @@ def run_tests():
     print_result("CASO 2 - Sensor con rango", result_2)
 
     # --------------------------------------------------------
-    # Caso 3: máximo de preguntas alcanzado
+    # Caso 3: mÃ¡ximo de preguntas alcanzado
     # --------------------------------------------------------
     context_3 = {
         "familia": "sensor",
@@ -73,10 +73,10 @@ def run_tests():
         priority_fields=["rango", "salida", "marca"],
     )
 
-    print_result("CASO 3 - Máximo de preguntas", result_3)
+    print_result("CASO 3 - MÃ¡ximo de preguntas", result_3)
 
     # --------------------------------------------------------
-    # Caso 4: knowledge simulado desde catálogo
+    # Caso 4: knowledge simulado desde catÃ¡logo
     # --------------------------------------------------------
     catalog_knowledge = {
         "categoria": "sensor",
@@ -102,8 +102,9 @@ def run_tests():
         questions_asked=1,
     )
 
-    print_result("CASO 4 - Decisión con knowledge de catálogo", result_4)
+    print_result("CASO 4 - DecisiÃ³n con knowledge de catÃ¡logo", result_4)
 
 
 if __name__ == "__main__":
     run_tests()
+

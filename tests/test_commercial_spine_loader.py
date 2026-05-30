@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # test_commercial_spine_loader.py
 # ============================================================
 # Prueba formal de carga del proceso comercial maestro de NIA OS.
@@ -7,10 +7,10 @@
 # - Validar que el loader cargue procesos desde:
 #   knowledge/nia_os/processes/
 # - Validar que process_commercial_spine_v1.json exista.
-# - Validar que tenga las secciones mínimas necesarias.
+# - Validar que tenga las secciones mÃ­nimas necesarias.
 # - Validar que el flujo maestro tenga estados comerciales clave.
 #
-# Esta prueba NO ejecuta todavía el flujo comercial.
+# Esta prueba NO ejecuta todavÃ­a el flujo comercial.
 # Solo valida que el proceso quede integrado como conocimiento formal.
 # ============================================================
 
@@ -58,17 +58,17 @@ def main() -> None:
     print("=" * 70)
 
     # ========================================================
-    # 1. Validación general de NIA OS
+    # 1. ValidaciÃ³n general de NIA OS
     # ========================================================
 
     validation = validate_nia_os_files()
 
-    print("\nVALIDACIÓN NIA OS:")
+    print("\nVALIDACIÃ“N NIA OS:")
     print(json.dumps(validation, ensure_ascii=False, indent=2, default=str))
 
     assert_condition(
         validation.get("ok") is True,
-        f"La validación NIA OS debe estar OK. Errores: {validation.get('errors')}",
+        f"La validaciÃ³n NIA OS debe estar OK. Errores: {validation.get('errors')}",
     )
 
     assert_condition(
@@ -125,7 +125,7 @@ def main() -> None:
     )
 
     # ========================================================
-    # 4. Carga helper específica del spine
+    # 4. Carga helper especÃ­fica del spine
     # ========================================================
 
     spine = get_commercial_spine_process()
@@ -147,7 +147,7 @@ def main() -> None:
     )
 
     # ========================================================
-    # 5. Claves mínimas requeridas
+    # 5. Claves mÃ­nimas requeridas
     # ========================================================
 
     required_keys = [
@@ -240,7 +240,7 @@ def main() -> None:
         )
 
     # ========================================================
-    # 8. Campos mínimos de memoria
+    # 8. Campos mÃ­nimos de memoria
     # ========================================================
 
     minimal_memory_fields = spine.get("minimal_memory_fields", {})
@@ -253,7 +253,7 @@ def main() -> None:
     for section in ["cliente", "producto_activo", "comercial"]:
         assert_condition(
             section in minimal_memory_fields,
-            f"minimal_memory_fields debe contener la sección: {section}",
+            f"minimal_memory_fields debe contener la secciÃ³n: {section}",
         )
 
         assert_condition(
@@ -290,7 +290,7 @@ def main() -> None:
     )
 
     # ========================================================
-    # 9. Política de respuesta
+    # 9. PolÃ­tica de respuesta
     # ========================================================
 
     response_policy = spine.get("response_policy", {})
@@ -317,7 +317,7 @@ def main() -> None:
 
     assert_condition(
         response_policy.get("must_not_invent_commercial_information") is True,
-        "response_policy debe exigir no inventar información comercial.",
+        "response_policy debe exigir no inventar informaciÃ³n comercial.",
     )
 
     # ========================================================
@@ -341,8 +341,9 @@ def main() -> None:
         "commercial_spine dentro de build_nia_os_context debe ser el proceso correcto.",
     )
 
-    print("\nFIN TEST COMMERCIAL SPINE LOADER ✅")
+    print("\nFIN TEST COMMERCIAL SPINE LOADER âœ…")
 
 
 if __name__ == "__main__":
     main()
+

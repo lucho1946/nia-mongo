@@ -1,13 +1,13 @@
-# ============================================================
+﻿# ============================================================
 # test_document_policy.py
 # ============================================================
-# Prueba aislada de la política documental de NIA.
+# Prueba aislada de la polÃ­tica documental de NIA.
 #
-# Este test valida que NIA sepa cuándo:
+# Este test valida que NIA sepa cuÃ¡ndo:
 # - usar contexto documental
-# - priorizar catálogo real
-# - evitar documentos para búsquedas de producto
-# - bloquear exposición interna sensible
+# - priorizar catÃ¡logo real
+# - evitar documentos para bÃºsquedas de producto
+# - bloquear exposiciÃ³n interna sensible
 #
 # NO toca:
 # - MongoDB
@@ -36,7 +36,7 @@ TEST_CASES = [
         "expected_internal": False,
     },
     {
-        "name": "Código exacto",
+        "name": "CÃ³digo exacto",
         "message": "busco el producto P382280",
         "expected_document": False,
         "expected_catalog": True,
@@ -44,49 +44,49 @@ TEST_CASES = [
     },
     {
         "name": "Precio producto",
-        "message": "precio de la válvula de bola",
+        "message": "precio de la vÃ¡lvula de bola",
         "expected_document": False,
         "expected_catalog": True,
         "expected_internal": False,
     },
     {
-        "name": "Consulta PLC técnica",
+        "name": "Consulta PLC tÃ©cnica",
         "message": "necesito un plc con modbus y 16 entradas",
         "expected_document": False,
         "expected_catalog": True,
         "expected_internal": False,
     },
     {
-        "name": "Reglas no inventar - público seguro",
-        "message": "qué reglas tiene NIA para no inventar productos",
+        "name": "Reglas no inventar - pÃºblico seguro",
+        "message": "quÃ© reglas tiene NIA para no inventar productos",
         "expected_document": True,
         "expected_catalog": False,
         "expected_internal": True,
     },
     {
-        "name": "Módulo guardrails - interno",
-        "message": "explícame module_guardrails_no_inventar",
+        "name": "MÃ³dulo guardrails - interno",
+        "message": "explÃ­came module_guardrails_no_inventar",
         "expected_document": True,
         "expected_catalog": False,
         "expected_internal": True,
     },
     {
-        "name": "Visión archivos - interno",
-        "message": "qué hace module_vision_archivos",
+        "name": "VisiÃ³n archivos - interno",
+        "message": "quÃ© hace module_vision_archivos",
         "expected_document": True,
         "expected_catalog": False,
         "expected_internal": True,
     },
     {
-        "name": "Documento explícito",
-        "message": "revisa este manual técnico",
+        "name": "Documento explÃ­cito",
+        "message": "revisa este manual tÃ©cnico",
         "expected_document": True,
         "expected_catalog": False,
         "expected_internal": False,
     },
     {
-        "name": "Ficha técnica producto",
-        "message": "qué dice la ficha tecnica del variador",
+        "name": "Ficha tÃ©cnica producto",
+        "message": "quÃ© dice la ficha tecnica del variador",
         "expected_document": True,
         "expected_catalog": True,
         "expected_internal": False,
@@ -132,7 +132,7 @@ def print_json(title: str, payload: dict) -> None:
 
 def main() -> None:
     """
-    Ejecuta pruebas de política documental.
+    Ejecuta pruebas de polÃ­tica documental.
     """
     print("\n" + "=" * 70)
     print("NIA DOCUMENT POLICY TEST")
@@ -153,7 +153,7 @@ def main() -> None:
         catalog_ok = result.get("prioritize_catalog") == case["expected_catalog"]
         internal_ok = result.get("is_internal_nia_query") == case["expected_internal"]
 
-        # Si es consulta interna, debe tener respuesta pública segura.
+        # Si es consulta interna, debe tener respuesta pÃºblica segura.
         public_guardrail_ok = True
 
         if case["expected_internal"]:
@@ -198,10 +198,11 @@ def main() -> None:
     })
 
     if failed == 0:
-        print("\nFIN TEST DOCUMENT POLICY ✅")
+        print("\nFIN TEST DOCUMENT POLICY âœ…")
     else:
-        print("\nFIN TEST DOCUMENT POLICY CON ERRORES ❌")
+        print("\nFIN TEST DOCUMENT POLICY CON ERRORES âŒ")
 
 
 if __name__ == "__main__":
     main()
+
