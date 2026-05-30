@@ -96,6 +96,10 @@ from orchestration.commercial_proforma import (
 from orchestration.commercial_state_engine import (
     update_commercial_process_state,
 )
+from orchestration.commercial_handoff import (
+    attach_commercial_handoff,
+)
+
 
 # ============================================================
 # SESIONES
@@ -137,6 +141,25 @@ def _normalize(text: Any) -> str:
 
     return re.sub(r"\s+", " ", text)
 
+def _attach_commercial_handoff_if_ready(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Adjunta una oportunidad comercial estructurada cuando la sesión
+    llega a un estado accionable para asesor.
+
+    Estados esperados:
+    - cotizacion_lista_para_asesor
+    - proforma_lista_para_asesor
+
+    Este helper es seguro:
+    - no rompe el flujo si falla;
+    - no envía nada a CRM todavía;
+    - solo guarda session["commercial_handoff"].
+    """
+    try:
+        return attach_commercial_handoff(session)
+    except Exception as exc:
+        print(f"[NIA][WARN] No se pudo construir commercial_handoff: {exc}")
+        return None
 
 def _is_clean_greeting(message: str) -> bool:
     """
@@ -1680,6 +1703,13 @@ def process_message(
             commercial_proforma_data_response.get("response", ""),
         )
 
+        # Si la proforma ya quedó lista para asesor,
+        # dejamos una oportunidad comercial estructurada en sesión.
+        handoff = _attach_commercial_handoff_if_ready(session)
+
+        if handoff:
+            commercial_proforma_data_response["commercial_handoff"] = handoff
+
         save_session(session)
 
         return _attach_nia_os_metadata(
@@ -1756,6 +1786,13 @@ def process_message(
             session,
             commercial_data_response.get("response", ""),
         )
+
+        # Si la cotización ya quedó lista para asesor,
+        # dejamos una oportunidad comercial estructurada en sesión.
+        handoff = _attach_commercial_handoff_if_ready(session)
+
+        if handoff:
+            commercial_data_response["commercial_handoff"] = handoff
 
         save_session(session)
 
@@ -1878,11 +1915,28 @@ def process_message(
         )
 
         if code_results:
-            # Guarda el resultado como último producto seleccionado.
-            # Esto mantiene el producto activo en memoria para que NIA
-            # pueda continuar naturalmente con cotización, seguimiento
-            # o proforma sin pedir que el cliente repita el producto.
             save_last_results(session, code_results)
+            
+            # ----------------------------------------------------
+            # Preservar la card formateada del producto exacto.
+            # ----------------------------------------------------
+            response_cards = final_response.get("cards")
+
+            if isinstance(response_cards, list) and response_cards:
+                formatted_active_product = response_cards[0]
+
+                if isinstance(formatted_active_product, dict):
+                    # Guardamos la card formateada en un campo dedicado.
+                    # Este campo conserva precio/disponibilidad como se muestran al usuario.
+                    session["last_selected_product_card"] = formatted_active_product
+
+                    # También actualizamos el producto activo estándar.
+                    session["last_selected_product"] = formatted_active_product
+                    session["last_selected_product_code"] = (
+                        formatted_active_product.get("codigo")
+                        or session.get("last_selected_product_code")
+                        or exact_code
+                    )
 
             # ----------------------------------------------------
             # Regla comercial:
@@ -1940,10 +1994,16 @@ def process_message(
 
         append_assistant_message(session, final_response.get("response", ""))
 
+        # Si al encontrar el producto ya tenemos teléfono del canal,
+        # la cotización puede quedar lista para asesor y se genera handoff.
+        handoff = _attach_commercial_handoff_if_ready(session)
+
+        if handoff:
+            final_response["commercial_handoff"] = handoff
+
         # IMPORTANTE:
-        # Antes faltaba persistir la sesión en esta rama.
-        # Sin esto, NIA respondía el producto exacto, pero no guardaba
-        # last_selected_product para el siguiente mensaje.
+        # Persistimos la sesión con producto activo, estado comercial
+        # y posible commercial_handoff.
         save_session(session)
 
         final_response["session_id"] = session_id
