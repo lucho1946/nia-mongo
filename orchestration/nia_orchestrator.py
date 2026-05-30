@@ -98,7 +98,9 @@ from orchestration.commercial_state_engine import (
 from orchestration.commercial_handoff import (
     attach_commercial_handoff,
 )
-
+from memory.commercial_opportunity_store import (
+    save_commercial_opportunity,
+)
 
 # ============================================================
 # SESIONES
@@ -149,15 +151,42 @@ def _attach_commercial_handoff_if_ready(session: Dict[str, Any]) -> Optional[Dic
     - cotizacion_lista_para_asesor
     - proforma_lista_para_asesor
 
+    Además de guardar el handoff en session["commercial_handoff"],
+    también persiste una oportunidad comercial en MongoDB:
+
+    collection:
+    - commercial_opportunities
+
     Este helper es seguro:
     - no rompe el flujo si falla;
-    - no envía nada a CRM todavía;
-    - solo guarda session["commercial_handoff"].
+    - no bloquea la respuesta al cliente;
+    - deja trazabilidad para Bitrix/CRM/panel futuro.
     """
     try:
-        return attach_commercial_handoff(session)
+        handoff = attach_commercial_handoff(session)
+
+        if not handoff:
+            return None
+
+        saved_opportunity = save_commercial_opportunity(handoff)
+
+        if saved_opportunity:
+            session["commercial_opportunity"] = saved_opportunity
+            session["commercial_opportunity_id"] = saved_opportunity.get("opportunity_id")
+
+            # También exponemos el ID dentro del handoff para que /chat
+            # lo entregue de una vez a frontend, Bitrix o integraciones.
+            handoff["opportunity_id"] = saved_opportunity.get("opportunity_id")
+            handoff["opportunity_saved"] = True
+        else:
+            handoff["opportunity_saved"] = False
+
+        session["commercial_handoff"] = handoff
+
+        return handoff
+
     except Exception as exc:
-        print(f"[NIA][WARN] No se pudo construir commercial_handoff: {exc}")
+        print(f"[NIA][WARN] No se pudo construir/guardar commercial_handoff: {exc}")
         return None
 
 def _is_clean_greeting(message: str) -> bool:
