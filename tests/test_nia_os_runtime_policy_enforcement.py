@@ -17,6 +17,7 @@ from orchestration.nia_os_runtime_policy import (
     limit_response_to_max_questions,
     enforce_response_against_runtime_policy,
     evaluate_response_against_runtime_policy,
+    has_next_step_signal,
 )
 
 
@@ -154,6 +155,67 @@ def run_case_no_enforcement_needed():
         fixed_response.get("nia_os_runtime_enforcement", {}).get("applied") is False,
         "No debe aplicar enforcement si no hace falta.",
     )
+    
+def run_case_enforce_missing_next_step():
+    print_section("CASO 4: enforcement agrega siguiente paso seguro")
+
+    nia_os_context = build_nia_os_context("producto")
+
+    response = {
+        "intent": "producto",
+        "response": "Encontré información relacionada con el producto.",
+    }
+
+    before = evaluate_response_against_runtime_policy(
+        response=response,
+        nia_os_context=nia_os_context,
+    )
+
+    fixed_response = enforce_response_against_runtime_policy(
+        response=response,
+        nia_os_context=nia_os_context,
+    )
+
+    after = evaluate_response_against_runtime_policy(
+        response=fixed_response,
+        nia_os_context=nia_os_context,
+    )
+
+    show_json("MISSING NEXT STEP ENFORCEMENT RESULT", {
+        "before": before,
+        "fixed_response": fixed_response,
+        "after": after,
+    })
+
+    assert_condition(
+        before.get("ok") is False,
+        "Antes debe fallar por falta de siguiente paso.",
+    )
+
+    assert_condition(
+        "missing_next_step" in before.get("flags", []),
+        "Antes debe marcar missing_next_step.",
+    )
+
+    assert_condition(
+        after.get("ok") is True,
+        "Después del enforcement debe cumplir.",
+    )
+
+    assert_condition(
+        has_next_step_signal(fixed_response.get("response")) is True,
+        "La respuesta corregida debe tener siguiente paso.",
+    )
+
+    assert_condition(
+        fixed_response.get("nia_os_runtime_enforcement", {}).get("applied") is True,
+        "Debe marcar enforcement aplicado.",
+    )
+
+    assert_condition(
+        "missing_next_step" in fixed_response.get("nia_os_runtime_enforcement", {}).get("reasons", []),
+        "Debe registrar missing_next_step como razón.",
+    )
 
 
 def main():
@@ -164,6 +226,7 @@ def main():
     run_case_limit_text_to_one_question()
     run_case_enforce_response()
     run_case_no_enforcement_needed()
+    run_case_enforce_missing_next_step()
 
     print("\nFIN TEST NIA OS RUNTIME POLICY ENFORCEMENT ✅")
 

@@ -494,6 +494,54 @@ def limit_response_to_max_questions(
 
     return cleaned or text
 
+def append_safe_next_step_if_missing(
+    response_text: Any,
+    *,
+    intent: str = "general",
+) -> str:
+    """
+    Agrega un siguiente paso seguro cuando la respuesta no lo tiene.
+
+    Reglas:
+    - No inventa productos.
+    - No inventa precios.
+    - No inventa stock.
+    - No promete entrega.
+    - Solo guía al usuario hacia una acción clara.
+
+    Esta función se usa únicamente cuando runtime_policy detecta:
+    missing_next_step.
+    """
+    text = "" if response_text is None else str(response_text).strip()
+
+    if not text:
+        text = "Puedo ayudarte con tu solicitud."
+
+    intent = "" if intent is None else str(intent).strip().lower()
+
+    if intent in ["codigo_producto", "producto", "consulta_producto_codigo", "consulta_producto_descripcion"]:
+        next_step = (
+            "Para continuar, cuéntame si quieres validar una referencia, "
+            "comparar opciones o avanzar con una cotización."
+        )
+    elif intent in ["comercial", "pide_precio", "pide_cotizacion"]:
+        next_step = (
+            "Para continuar, confírmame el producto o referencia que quieres cotizar."
+        )
+    elif intent in ["saludo"]:
+        next_step = (
+            "Cuéntame qué producto industrial necesitas."
+        )
+    else:
+        next_step = (
+            "Para continuar, cuéntame qué producto, referencia o especificación quieres validar."
+        )
+
+    # Evita duplicar si por alguna razón ya existe una señal de siguiente paso.
+    if has_next_step_signal(text):
+        return text
+
+    return f"{text}\n\n{next_step}".strip()
 
 def enforce_response_against_runtime_policy(
     response: Dict[str, Any],
@@ -502,11 +550,13 @@ def enforce_response_against_runtime_policy(
     """
     Aplica corrección segura sobre la respuesta final según NIA OS.
 
-    Primera regla activa:
+    Reglas activas:
     - Si la respuesta tiene más preguntas que max_questions_per_turn,
       conserva solo la primera pregunta útil.
+    - Si la respuesta no deja siguiente paso, agrega un siguiente paso
+      genérico y seguro.
 
-    Esta función sí puede modificar response["response"], pero:
+    Esta función puede modificar response["response"], pero:
     - no cambia productos;
     - no cambia cards;
     - no cambia precios;
@@ -528,9 +578,11 @@ def enforce_response_against_runtime_policy(
     enforcement = {
         "applied": False,
         "source": "nia_os_runtime_policy",
-        "reason": None,
+        "reasons": [],
         "before_question_count": initial_check.get("question_count", 0),
         "after_question_count": initial_check.get("question_count", 0),
+        "before_includes_next_step": initial_check.get("includes_next_step", False),
+        "after_includes_next_step": initial_check.get("includes_next_step", False),
     }
 
     if initial_check.get("ok") is True:
@@ -538,35 +590,55 @@ def enforce_response_against_runtime_policy(
         return response
 
     flags = initial_check.get("flags", [])
-
-    if "too_many_questions_in_turn" not in flags:
-        response.setdefault("nia_os_runtime_enforcement", enforcement)
-        return response
-
     policy = build_runtime_policy_from_nia_os(nia_os_context)
-    max_questions = policy.get("max_questions_per_turn", 1)
 
-    original_text = response.get("response", "")
+    # --------------------------------------------------------
+    # 1. Corregir exceso de preguntas
+    # --------------------------------------------------------
+    if "too_many_questions_in_turn" in flags:
+        max_questions = policy.get("max_questions_per_turn", 1)
 
-    cleaned_text = limit_response_to_max_questions(
-        original_text,
-        max_questions=max_questions,
+        response["response"] = limit_response_to_max_questions(
+            response.get("response", ""),
+            max_questions=max_questions,
+        )
+
+        enforcement["applied"] = True
+        enforcement["reasons"].append("too_many_questions_in_turn")
+
+    # --------------------------------------------------------
+    # 2. Corregir falta de siguiente paso
+    # --------------------------------------------------------
+    # Re-evaluamos después de limitar preguntas porque esa corrección
+    # puede haber cambiado el texto.
+    # --------------------------------------------------------
+    intermediate_check = evaluate_response_against_runtime_policy(
+        response=response,
+        nia_os_context=nia_os_context,
     )
 
-    response["response"] = cleaned_text
+    if "missing_next_step" in intermediate_check.get("flags", []):
+        response["response"] = append_safe_next_step_if_missing(
+            response.get("response", ""),
+            intent=response.get("intent") or nia_os_context.get("nia_os_intent") or "general",
+        )
+
+        enforcement["applied"] = True
+        enforcement["reasons"].append("missing_next_step")
 
     final_check = evaluate_response_against_runtime_policy(
         response=response,
         nia_os_context=nia_os_context,
     )
 
-    enforcement = {
-        "applied": True,
-        "source": "nia_os_runtime_policy",
-        "reason": "too_many_questions_in_turn",
-        "before_question_count": initial_check.get("question_count", 0),
-        "after_question_count": final_check.get("question_count", 0),
-    }
+    enforcement["after_question_count"] = final_check.get("question_count", 0)
+    enforcement["after_includes_next_step"] = final_check.get("includes_next_step", False)
+
+    # Compatibilidad con tests/código anterior que espera "reason"
+    if enforcement["reasons"]:
+        enforcement["reason"] = enforcement["reasons"][0]
+    else:
+        enforcement["reason"] = None
 
     response["nia_os_runtime_enforcement"] = enforcement
 
