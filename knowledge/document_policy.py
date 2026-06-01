@@ -116,6 +116,15 @@ NIA_OS_KEYWORDS = [
     "política interna",
     "configuracion interna",
     "configuración interna",
+    "conocimiento",
+    "conocimiento conectado",
+    "base de conocimiento",
+    "fuentes conectadas",
+    "fuentes de conocimiento",
+    "que sabes",
+    "qué sabes",
+    "que informacion tienes",
+    "qué información tienes",
 ]
 
 INTERNAL_DISCLOSURE_KEYWORDS = [
@@ -141,6 +150,15 @@ INTERNAL_DISCLOSURE_KEYWORDS = [
     "sistema interno",
     "nia os",
     "no inventar",
+    "conocimiento",
+    "conocimiento conectado",
+    "base de conocimiento",
+    "fuentes conectadas",
+    "fuentes de conocimiento",
+    "que sabes",
+    "qué sabes",
+    "que informacion tienes",
+    "qué información tienes",
 ]
 
 
@@ -287,21 +305,24 @@ def is_internal_nia_query(message: str) -> bool:
 
 def get_public_internal_response() -> str:
     """
-    Respuesta segura para clientes cuando preguntan por reglas internas.
+    Respuesta segura para clientes cuando preguntan por funcionamiento,
+    criterios, configuración o componentes no públicos de NIA.
 
     No expone:
-    - nombres de módulos internos
-    - JSON internos
-    - prompts
-    - arquitectura completa
-    - configuración sensible
+    - nombres de módulos;
+    - nombres de archivos JSON;
+    - prompts;
+    - arquitectura completa;
+    - configuración sensible;
+    - rutas internas del proyecto.
     """
     return (
-        "Trabajo con reglas internas para evitar inventar productos, códigos, "
-        "precios, disponibilidad, stock o compatibilidades. Siempre debo basarme "
-        "en el catálogo real, información confirmada o pedir más datos cuando no "
-        "haya suficiente certeza. No puedo mostrar configuración interna, pero sí "
-        "puedo ayudarte a validar un producto, una referencia o una especificación."
+        "Trabajo con criterios de seguridad para evitar inventar productos, "
+        "códigos, precios, disponibilidad, stock o compatibilidades. Siempre debo "
+        "basarme en el catálogo real, información confirmada o pedir más datos "
+        "cuando no haya suficiente certeza. No puedo compartir detalles técnicos "
+        "del sistema, pero sí puedo ayudarte a validar un producto, una referencia "
+        "o una especificación."
     )
 
 
