@@ -82,6 +82,10 @@ from knowledge.document_policy import (
     evaluate_document_policy,
 )
 
+from knowledge.response_guardrails import (
+    apply_response_guardrails,
+)
+
 from orchestration.commercial_continuity import (
     build_commercial_continuity_response,
     build_commercial_data_capture_response,
@@ -367,12 +371,21 @@ def _attach_nia_os_metadata(
     nia_os_context: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    Adjunta metadata interna de NIA OS y document_policy a la respuesta.
+    Adjunta metadata interna de NIA OS, document_policy y
+    response_guardrails a la respuesta.
 
     Nota:
     - En producción esta metadata puede ocultarse desde el router si se desea.
     - No debe usarse para exponer configuración sensible al cliente.
+    - response_guardrails por ahora NO bloquea ni reescribe la respuesta.
+      Solo diagnostica riesgo en modo metadata.
     """
+    if not isinstance(response, dict):
+        response = {
+            "intent": "general",
+            "response": "",
+        }
+
     response["nia_os"] = {
         "intent": nia_os_context.get("nia_os_intent"),
         "module_ids": nia_os_context.get("module_ids", []),
@@ -389,6 +402,28 @@ def _attach_nia_os_metadata(
             "reason": document_policy.get("reason", ""),
             "is_internal_nia_query": document_policy.get("is_internal_nia_query", False),
             "allow_public_disclosure": document_policy.get("allow_public_disclosure", True),
+        }
+
+    # --------------------------------------------------------
+    # Guardrails de respuesta
+    # --------------------------------------------------------
+    # Primera integración activa de NIA OS:
+    # validamos la respuesta final, pero NO bloqueamos ni
+    # reescribimos todavía.
+    try:
+        response = apply_response_guardrails(
+            response,
+            source="nia_orchestrator",
+        )
+    except Exception as error:
+        response["response_guardrails"] = {
+            "ok": False,
+            "version": "response_guardrails_v1",
+            "source": "nia_orchestrator",
+            "risk_level": "medium",
+            "recommendation": "review",
+            "flags": ["response_guardrails_error"],
+            "error": str(error),
         }
 
     return response

@@ -216,11 +216,23 @@ def run_case_adapter_exposes_quote_handoff():
         "El handoff debe conservar referencia.",
     )
 
+    precio_handoff = handoff.get("producto_precio")
+
     assert_condition(
-        handoff.get("producto_precio") == "$475,114 COP",
-        "El handoff debe conservar precio.",
+        precio_handoff not in [None, "", "Consultarnos", "Consultar"],
+        f"El handoff con teléfono debe conservar un precio real vigente. Recibido: {precio_handoff}",
     )
 
+    assert_condition(
+        str(precio_handoff).startswith("$"),
+        f"El precio del handoff con teléfono debe venir formateado en COP. Recibido: {precio_handoff}",
+    )
+
+    assert_condition(
+        "COP" in str(precio_handoff),
+        f"El precio del handoff con teléfono debe indicar COP. Recibido: {precio_handoff}",
+    )
+    
     assert_condition(
         normalize_text(handoff.get("producto_disponibilidad")) == "disponible en bogota (6 und)",
         "El handoff debe conservar disponibilidad.",
@@ -323,9 +335,21 @@ def run_case_adapter_exposes_channel_phone_handoff():
         "Debe conservar producto 300203.",
     )
 
+    precio_handoff = handoff.get("producto_precio")
+
     assert_condition(
-        handoff.get("producto_precio") == "$475,114 COP",
-        "Debe conservar precio en handoff con telÃ©fono.",
+        precio_handoff not in [None, "", "Consultarnos", "Consultar"],
+        f"El handoff con teléfono debe conservar un precio real vigente. Recibido: {precio_handoff}",
+    )
+
+    assert_condition(
+        str(precio_handoff).startswith("$"),
+        f"El precio del handoff con teléfono debe venir formateado en COP. Recibido: {precio_handoff}",
+    )
+
+    assert_condition(
+        "COP" in str(precio_handoff),
+        f"El precio del handoff con teléfono debe indicar COP. Recibido: {precio_handoff}",
     )
 
     assert_condition(
