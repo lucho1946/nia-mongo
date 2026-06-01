@@ -158,3 +158,97 @@ def should_ask_question_this_turn(
         current = 0
 
     return current < max_questions
+
+def count_questions_in_text(text: Any) -> int:
+    """
+    Cuenta preguntas explícitas en un texto.
+
+    Primera versión simple:
+    - cuenta signos de interrogación de cierre;
+    - si no hay signo, intenta detectar frases interrogativas comunes.
+
+    Esto no reemplaza NLP avanzado, pero es suficiente para auditar
+    la regla de NIA OS: máximo una pregunta por turno.
+    """
+    text = "" if text is None else str(text).strip()
+
+    if not text:
+        return 0
+
+    explicit_questions = text.count("?") + text.count("¿")
+
+    # En español normalmente una pregunta puede traer ¿ y ?.
+    # Para no contar doble, usamos el mayor entre ambos pares.
+    if explicit_questions > 0:
+        return max(text.count("?"), text.count("¿"), 1)
+
+    normalized = text.lower()
+
+    question_starters = [
+        "qué ",
+        "que ",
+        "cuál ",
+        "cual ",
+        "cuánto ",
+        "cuanto ",
+        "cuánta ",
+        "cuanta ",
+        "confirmas ",
+        "me confirmas ",
+        "puedes confirmar ",
+        "necesitas ",
+        "quieres ",
+    ]
+
+    if any(starter in normalized for starter in question_starters):
+        return 1
+
+    return 0
+
+
+def evaluate_response_against_runtime_policy(
+    response: Dict[str, Any],
+    nia_os_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Evalúa una respuesta final contra la política runtime de NIA OS.
+
+    Esta función NO modifica la respuesta.
+    Solo genera diagnóstico para trazabilidad interna.
+
+    Primera validación:
+    - max_questions_per_turn.
+
+    Próximas validaciones:
+    - siguiente paso comercial;
+    - uso de memoria antes de preguntar;
+    - no repetición de datos;
+    - no inventar información comercial.
+    """
+    if not isinstance(response, dict):
+        response = {}
+
+    policy = build_runtime_policy_from_nia_os(nia_os_context)
+
+    response_text = response.get("response", "")
+    question_count = count_questions_in_text(response_text)
+    max_questions = policy.get("max_questions_per_turn", 1)
+
+    flags = []
+
+    if question_count > max_questions:
+        flags.append("too_many_questions_in_turn")
+
+    ok = len(flags) == 0
+
+    return {
+        "ok": ok,
+        "source": "nia_os_runtime_policy",
+        "checked_rules": [
+            "max_questions_per_turn",
+        ],
+        "flags": flags,
+        "question_count": question_count,
+        "max_questions_per_turn": max_questions,
+        "recommendation": "allow" if ok else "review",
+    }

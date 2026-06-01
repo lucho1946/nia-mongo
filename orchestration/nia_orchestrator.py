@@ -88,6 +88,7 @@ from knowledge.response_guardrails import (
 
 from orchestration.nia_os_runtime_policy import (
     build_runtime_policy_from_nia_os,
+    evaluate_response_against_runtime_policy,
 )
 
 from orchestration.commercial_continuity import (
@@ -444,6 +445,34 @@ def _attach_nia_os_metadata(
             "recommendation": "review",
             "flags": ["response_guardrails_error"],
             "error": str(error),
+        }
+
+    # --------------------------------------------------------
+    # Runtime policy check
+    # --------------------------------------------------------
+    # Segunda integración activa de NIA OS:
+    # la política ya no solo se adjunta como metadata,
+    # ahora también audita la respuesta final.
+    #
+    # Por ahora NO bloquea ni reescribe.
+    # Solo deja diagnóstico seguro para comprobar si NIA respeta:
+    # - máximo una pregunta por turno.
+    # --------------------------------------------------------
+    try:
+        response["nia_os"]["runtime_policy_check"] = (
+            evaluate_response_against_runtime_policy(
+                response=response,
+                nia_os_context=nia_os_context,
+            )
+        )
+    except Exception as error:
+        response["nia_os"]["runtime_policy_check"] = {
+            "ok": False,
+            "source": "nia_os_runtime_policy",
+            "checked_rules": [],
+            "flags": ["runtime_policy_check_error"],
+            "error": str(error),
+            "recommendation": "review",
         }
 
     return response
