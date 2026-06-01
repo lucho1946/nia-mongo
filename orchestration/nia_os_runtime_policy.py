@@ -252,3 +252,252 @@ def evaluate_response_against_runtime_policy(
         "max_questions_per_turn": max_questions,
         "recommendation": "allow" if ok else "review",
     }
+    
+def _split_text_into_sentences(text: str) -> list[str]:
+    """
+    Divide texto en frases simples conservando separadores básicos.
+
+    No busca perfección lingüística; solo necesitamos una separación
+    segura para detectar y conservar la primera pregunta.
+    """
+    import re
+
+    text = "" if text is None else str(text).strip()
+
+    if not text:
+        return []
+
+    parts = re.split(r"(?<=[\.\?\!])\s+", text)
+
+    return [
+        part.strip()
+        for part in parts
+        if part and part.strip()
+    ]
+
+
+def _is_question_sentence(sentence: str) -> bool:
+    """
+    Determina si una frase parece pregunta.
+    """
+    sentence = "" if sentence is None else str(sentence).strip()
+
+    if not sentence:
+        return False
+
+    if "?" in sentence or "¿" in sentence:
+        return True
+
+    normalized = sentence.lower()
+
+    starters = [
+        # --- Tu lista base original ---
+        "qué ",
+        "que ",
+        "cuál ",
+        "cual ",
+        "cuánto ",
+        "cuanto ",
+        "cuánta ",
+        "cuanta ",
+        "me confirmas ",
+        "puedes confirmar ",
+        "quieres ",
+        "necesitas ",
+
+        # --- Variantes en plural ---
+        "cuáles ",
+        "cuales ",
+        "cuántos ",
+        "cuantos ",
+        "cuántas ",
+        "cuantas ",
+
+        # --- Pronombres de persona (singular y plural) ---
+        "quién ",
+        "quien ",
+        "quiénes ",
+        "quienes ",
+
+        # --- Adverbios interrogativos fundamentales de lugar, tiempo y modo ---
+        "cómo ",
+        "como ",
+        "dónde ",
+        "donde ",
+        "cuándo ",
+        "cuando ",
+        "adónde ",
+        "adonde ",
+
+        # --- Pronombres interrogativos precedidos por preposiciones comunes ---
+        "por qué ",
+        "por que ",
+        "para qué ",
+        "para que ",
+        "a qué ",
+        "de qué ",
+        "en qué ",
+        "con qué ",
+        "a quién ",
+        "con quién ",
+        "de quién ",
+        "a quiénes ",
+        "con quiénes ",
+        "de quiénes ",
+        "a dónde ",
+        "de dónde ",
+        "en dónde ",
+        "por dónde ",
+        "hacia dónde ",
+        "desde cuándo ",
+        "hasta cuándo ",
+        "a cuál ",
+        "de cuál ",
+        "en cuál ",
+        "con cuál ",
+        "a cuáles ",
+        "de cuáles ",
+        "en cuáles ",
+        "con cuáles ",
+        "a cuánto ",
+        "de cuánto ",
+        "en cuánto ",
+    ]
+
+    return any(normalized.startswith(starter) for starter in starters)
+
+
+def limit_response_to_max_questions(
+    response_text: Any,
+    *,
+    max_questions: int = 1,
+) -> str:
+    """
+    Reduce una respuesta para que no supere el máximo de preguntas.
+
+    Estrategia segura:
+    - conserva todo texto afirmativo previo;
+    - conserva solo las primeras N preguntas;
+    - elimina preguntas adicionales;
+    - no agrega información comercial nueva.
+
+    Ejemplo:
+    Entrada:
+    "¿Qué producto necesitas? ¿Qué marca prefieres? ¿Qué rango buscas?"
+
+    Salida:
+    "¿Qué producto necesitas?"
+    """
+    text = "" if response_text is None else str(response_text).strip()
+
+    if not text:
+        return ""
+
+    try:
+        max_questions = int(max_questions)
+    except Exception:
+        max_questions = 1
+
+    if max_questions < 1:
+        max_questions = 1
+
+    sentences = _split_text_into_sentences(text)
+
+    if not sentences:
+        return text
+
+    kept: list[str] = []
+    question_count = 0
+
+    for sentence in sentences:
+        if _is_question_sentence(sentence):
+            if question_count >= max_questions:
+                continue
+
+            question_count += 1
+            kept.append(sentence)
+            continue
+
+        kept.append(sentence)
+
+    cleaned = " ".join(kept).strip()
+
+    return cleaned or text
+
+
+def enforce_response_against_runtime_policy(
+    response: Dict[str, Any],
+    nia_os_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Aplica corrección segura sobre la respuesta final según NIA OS.
+
+    Primera regla activa:
+    - Si la respuesta tiene más preguntas que max_questions_per_turn,
+      conserva solo la primera pregunta útil.
+
+    Esta función sí puede modificar response["response"], pero:
+    - no cambia productos;
+    - no cambia cards;
+    - no cambia precios;
+    - no cambia disponibilidad;
+    - no inventa datos;
+    - deja metadata de corrección.
+    """
+    if not isinstance(response, dict):
+        response = {
+            "intent": "general",
+            "response": "",
+        }
+
+    initial_check = evaluate_response_against_runtime_policy(
+        response=response,
+        nia_os_context=nia_os_context,
+    )
+
+    enforcement = {
+        "applied": False,
+        "source": "nia_os_runtime_policy",
+        "reason": None,
+        "before_question_count": initial_check.get("question_count", 0),
+        "after_question_count": initial_check.get("question_count", 0),
+    }
+
+    if initial_check.get("ok") is True:
+        response.setdefault("nia_os_runtime_enforcement", enforcement)
+        return response
+
+    flags = initial_check.get("flags", [])
+
+    if "too_many_questions_in_turn" not in flags:
+        response.setdefault("nia_os_runtime_enforcement", enforcement)
+        return response
+
+    policy = build_runtime_policy_from_nia_os(nia_os_context)
+    max_questions = policy.get("max_questions_per_turn", 1)
+
+    original_text = response.get("response", "")
+
+    cleaned_text = limit_response_to_max_questions(
+        original_text,
+        max_questions=max_questions,
+    )
+
+    response["response"] = cleaned_text
+
+    final_check = evaluate_response_against_runtime_policy(
+        response=response,
+        nia_os_context=nia_os_context,
+    )
+
+    enforcement = {
+        "applied": True,
+        "source": "nia_os_runtime_policy",
+        "reason": "too_many_questions_in_turn",
+        "before_question_count": initial_check.get("question_count", 0),
+        "after_question_count": final_check.get("question_count", 0),
+    }
+
+    response["nia_os_runtime_enforcement"] = enforcement
+
+    return response

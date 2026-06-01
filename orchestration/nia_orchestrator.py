@@ -89,6 +89,7 @@ from knowledge.response_guardrails import (
 from orchestration.nia_os_runtime_policy import (
     build_runtime_policy_from_nia_os,
     evaluate_response_against_runtime_policy,
+    enforce_response_against_runtime_policy,
 )
 
 from orchestration.commercial_continuity import (
@@ -459,12 +460,31 @@ def _attach_nia_os_metadata(
     # - máximo una pregunta por turno.
     # --------------------------------------------------------
     try:
-        response["nia_os"]["runtime_policy_check"] = (
-            evaluate_response_against_runtime_policy(
+        runtime_policy_check = evaluate_response_against_runtime_policy(
+            response=response,
+            nia_os_context=nia_os_context,
+        )
+
+        response["nia_os"]["runtime_policy_check"] = runtime_policy_check
+
+        # ----------------------------------------------------
+        # Luego aplicamos enforcement suave si hace falta.
+        # Por ahora solo corrige exceso de preguntas.
+        # ----------------------------------------------------
+        if runtime_policy_check.get("recommendation") == "review":
+            response = enforce_response_against_runtime_policy(
                 response=response,
                 nia_os_context=nia_os_context,
             )
-        )
+
+            # Recalculamos el check después de corregir.
+            response["nia_os"]["runtime_policy_check"] = (
+                evaluate_response_against_runtime_policy(
+                    response=response,
+                    nia_os_context=nia_os_context,
+                )
+            )
+
     except Exception as error:
         response["nia_os"]["runtime_policy_check"] = {
             "ok": False,
