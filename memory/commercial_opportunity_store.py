@@ -411,3 +411,87 @@ def find_commercial_opportunities_by_session(
             error,
         )
         return []
+    
+def find_recent_commercial_opportunities(
+    *,
+    limit: int = 10,
+    estado: Optional[str] = None,
+    tipo: Optional[str] = None,
+    canal: Optional[str] = None,
+) -> list[Dict[str, Any]]:
+    """
+    Lista oportunidades comerciales recientes.
+
+    Filtros opcionales:
+    - estado: lista_para_asesor, enviada, cerrada, etc.
+    - tipo: cotizacion / proforma.
+    - canal: web / whatsapp / etc.
+
+    Orden:
+    - Más recientes primero por updated_at_date.
+
+    Uso:
+    - revisión interna;
+    - pruebas;
+    - futura bandeja comercial;
+    - integración Bitrix/CRM.
+    """
+    if not _is_enabled():
+        return []
+
+    # Limit seguro para no traer demasiados documentos.
+    try:
+        limit = int(limit)
+    except Exception:
+        limit = 10
+
+    if limit < 1:
+        limit = 1
+
+    if limit > 100:
+        limit = 100
+
+    query: Dict[str, Any] = {}
+
+    estado = _safe_str(estado)
+    tipo = _safe_str(tipo)
+    canal = _safe_str(canal)
+
+    if estado:
+        query["estado"] = estado
+
+    if tipo:
+        query["tipo"] = tipo
+
+    if canal:
+        query["canal"] = canal
+
+    try:
+        ensure_commercial_opportunity_indexes()
+
+        collection = _get_collection()
+
+        cursor = (
+            collection
+            .find(query)
+            .sort("updated_at_date", -1)
+            .limit(limit)
+        )
+
+        return [_clean_for_return(document) for document in cursor]
+
+    except PyMongoError as error:
+        logger.warning(
+            "Error Mongo listando oportunidades recientes query=%s: %s",
+            query,
+            error,
+        )
+        return []
+
+    except Exception as error:
+        logger.warning(
+            "Error inesperado listando oportunidades recientes query=%s: %s",
+            query,
+            error,
+        )
+        return []

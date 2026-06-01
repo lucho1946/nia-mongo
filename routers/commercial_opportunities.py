@@ -26,11 +26,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Query
 
 from memory.commercial_opportunity_store import (
     get_commercial_opportunity,
     find_commercial_opportunities_by_session,
+    find_recent_commercial_opportunities,
 )
 
 
@@ -41,6 +42,61 @@ router = APIRouter(
     tags=["Commercial Opportunities"],
 )
 
+@router.get("/recent")
+def get_recent_opportunities(
+    limit: int = Query(
+        default=10,
+        ge=1,
+        le=100,
+        description="Cantidad máxima de oportunidades recientes a retornar.",
+    ),
+    estado: str | None = Query(
+        default=None,
+        description="Filtro opcional por estado. Ej: lista_para_asesor.",
+    ),
+    tipo: str | None = Query(
+        default=None,
+        description="Filtro opcional por tipo. Ej: cotizacion o proforma.",
+    ),
+    canal: str | None = Query(
+        default=None,
+        description="Filtro opcional por canal. Ej: web o whatsapp.",
+    ),
+) -> Dict[str, Any]:
+    """
+    Lista oportunidades comerciales recientes.
+
+    Este endpoint permite revisar las últimas oportunidades generadas
+    por NIA sin conocer previamente opportunity_id o session_id.
+    """
+    try:
+        items = find_recent_commercial_opportunities(
+            limit=limit,
+            estado=estado,
+            tipo=tipo,
+            canal=canal,
+        )
+
+        return {
+            "ok": True,
+            "total": len(items),
+            "limit": limit,
+            "filters": {
+                "estado": estado,
+                "tipo": tipo,
+                "canal": canal,
+            },
+            "items": items,
+        }
+
+    except Exception as error:
+        logger.exception(
+            "Error consultando oportunidades comerciales recientes"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error consultando oportunidades recientes: {error}",
+        )
 
 @router.get("/{opportunity_id}")
 def get_opportunity_by_id(
