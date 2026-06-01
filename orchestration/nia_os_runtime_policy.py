@@ -206,6 +206,68 @@ def count_questions_in_text(text: Any) -> int:
     return 0
 
 
+def has_next_step_signal(text: Any) -> bool:
+    """
+    Detecta si una respuesta deja un siguiente paso claro.
+
+    No inventa ni modifica respuesta.
+    Solo audita señales textuales comunes de avance comercial.
+
+    Ejemplos válidos:
+    - Para continuar...
+    - El siguiente paso...
+    - ¿Me confirmas...?
+    - Puedo dejar la cotización...
+    - Puedes compartirme...
+    - ¿Quieres avanzar...?
+    """
+    text = "" if text is None else str(text).strip()
+
+    if not text:
+        return False
+
+    normalized = text.lower()
+
+    next_step_signals = [
+        "para continuar",
+        "siguiente paso",
+        "próximo paso",
+        "proximo paso",
+        "puedo dejar",
+        "puedo ayudarte",
+        "para ayudarte",
+        "me confirmas",
+        "puedes confirmar",
+        "puedes compartirme",
+        "quieres avanzar",
+        "quieres que",
+        "si quieres",
+        "si deseas",
+        "déjame",
+        "dejame",
+        "compárteme",
+        "comparteme",
+        "confirmame",
+        "confírmame",
+        "validar",
+        "cotización",
+        "cotizacion",
+        "proforma",
+        "asesor",
+        "revisar equivalentes",
+        "afinar la búsqueda",
+        "afinar la busqueda",
+        "qué producto",
+        "que producto",
+        "producto industrial necesitas",
+        "producto necesitas",
+        "qué necesitas",
+        "que necesitas",
+    ]
+
+    return any(signal in normalized for signal in next_step_signals)
+
+
 def evaluate_response_against_runtime_policy(
     response: Dict[str, Any],
     nia_os_context: Dict[str, Any],
@@ -216,14 +278,9 @@ def evaluate_response_against_runtime_policy(
     Esta función NO modifica la respuesta.
     Solo genera diagnóstico para trazabilidad interna.
 
-    Primera validación:
+    Reglas auditadas:
     - max_questions_per_turn.
-
-    Próximas validaciones:
-    - siguiente paso comercial;
-    - uso de memoria antes de preguntar;
-    - no repetición de datos;
-    - no inventar información comercial.
+    - must_include_next_step.
     """
     if not isinstance(response, dict):
         response = {}
@@ -234,22 +291,35 @@ def evaluate_response_against_runtime_policy(
     question_count = count_questions_in_text(response_text)
     max_questions = policy.get("max_questions_per_turn", 1)
 
+    checked_rules = [
+        "max_questions_per_turn",
+    ]
+
     flags = []
 
     if question_count > max_questions:
         flags.append("too_many_questions_in_turn")
+
+    must_include_next_step = policy.get("must_include_next_step") is True
+    includes_next_step = has_next_step_signal(response_text)
+
+    if must_include_next_step:
+        checked_rules.append("must_include_next_step")
+
+        if not includes_next_step:
+            flags.append("missing_next_step")
 
     ok = len(flags) == 0
 
     return {
         "ok": ok,
         "source": "nia_os_runtime_policy",
-        "checked_rules": [
-            "max_questions_per_turn",
-        ],
+        "checked_rules": checked_rules,
         "flags": flags,
         "question_count": question_count,
         "max_questions_per_turn": max_questions,
+        "must_include_next_step": must_include_next_step,
+        "includes_next_step": includes_next_step,
         "recommendation": "allow" if ok else "review",
     }
     

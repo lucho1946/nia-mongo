@@ -15,6 +15,7 @@ from knowledge.nia_os_loader import build_nia_os_context
 from orchestration.nia_os_runtime_policy import (
     count_questions_in_text,
     evaluate_response_against_runtime_policy,
+    has_next_step_signal,
 )
 from orchestration.nia_orchestrator import process_message
 
@@ -52,6 +53,10 @@ def run_case_count_questions():
         count_questions_in_text("Encontré el producto exacto.") == 0,
         "Debe contar cero preguntas.",
     )
+    assert_condition(
+        has_next_step_signal("Hola, soy NIA. ¿Qué producto industrial necesitas?") is True,
+        "El saludo debe contar como siguiente paso comercial claro.",
+    )
 
 
 def run_case_policy_allows_one_question():
@@ -84,6 +89,16 @@ def run_case_policy_allows_one_question():
         result.get("recommendation") == "allow",
         "Debe recomendar allow.",
     )
+    
+    assert_condition(
+        "must_include_next_step" in result.get("checked_rules", []),
+        "Debe auditar must_include_next_step.",
+    )
+
+    assert_condition(
+        result.get("includes_next_step") is True,
+        "Debe detectar siguiente paso en la respuesta.",
+    )
 
 
 def run_case_policy_flags_multiple_questions():
@@ -92,12 +107,12 @@ def run_case_policy_flags_multiple_questions():
     nia_os_context = build_nia_os_context("producto")
 
     response = {
-        "response": (
-            "¿Qué producto necesitas? "
-            "¿Qué marca prefieres? "
-            "¿Qué rango necesitas?"
-        )
-    }
+    "response": (
+        "Para ayudarte mejor, ¿qué producto necesitas? "
+        "¿Qué marca prefieres? "
+        "¿Qué rango necesitas?"
+    )
+}
 
     result = evaluate_response_against_runtime_policy(
         response=response,
@@ -155,6 +170,37 @@ def run_case_orchestrator_attaches_policy_check():
         runtime_policy_check.get("recommendation") in ["allow", "review"],
         "Debe devolver una recomendación válida.",
     )
+    
+def run_case_policy_flags_missing_next_step():
+    print_section("CASO 5: política detecta falta de siguiente paso")
+
+    nia_os_context = build_nia_os_context("producto")
+
+    response = {
+        "response": "Encontré información relacionada con el producto."
+    }
+
+    result = evaluate_response_against_runtime_policy(
+        response=response,
+        nia_os_context=nia_os_context,
+    )
+
+    show_json("POLICY CHECK MISSING NEXT STEP", result)
+
+    assert_condition(
+        result.get("ok") is False,
+        "Una respuesta sin siguiente paso debe marcarse como no ok.",
+    )
+
+    assert_condition(
+        "missing_next_step" in result.get("flags", []),
+        "Debe marcar missing_next_step.",
+    )
+
+    assert_condition(
+        result.get("includes_next_step") is False,
+        "Debe indicar que no hay siguiente paso.",
+    )
 
 
 def main():
@@ -166,9 +212,40 @@ def main():
     run_case_policy_allows_one_question()
     run_case_policy_flags_multiple_questions()
     run_case_orchestrator_attaches_policy_check()
+    run_case_policy_flags_missing_next_step()
 
     print("\nFIN TEST NIA OS RUNTIME POLICY CHECK ✅")
 
+def run_case_policy_flags_missing_next_step():
+    print_section("CASO 5: política detecta falta de siguiente paso")
 
+    nia_os_context = build_nia_os_context("producto")
+
+    response = {
+        "response": "Encontré información relacionada con el producto."
+    }
+
+    result = evaluate_response_against_runtime_policy(
+        response=response,
+        nia_os_context=nia_os_context,
+    )
+
+    show_json("POLICY CHECK MISSING NEXT STEP", result)
+
+    assert_condition(
+        result.get("ok") is False,
+        "Una respuesta sin siguiente paso debe marcarse como no ok.",
+    )
+
+    assert_condition(
+        "missing_next_step" in result.get("flags", []),
+        "Debe marcar missing_next_step.",
+    )
+
+    assert_condition(
+        result.get("includes_next_step") is False,
+        "Debe indicar que no hay siguiente paso.",
+    )
+    
 if __name__ == "__main__":
     main()
