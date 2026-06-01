@@ -86,6 +86,10 @@ from knowledge.response_guardrails import (
     apply_response_guardrails,
 )
 
+from orchestration.nia_os_runtime_policy import (
+    build_runtime_policy_from_nia_os,
+)
+
 from orchestration.commercial_continuity import (
     build_commercial_continuity_response,
     build_commercial_data_capture_response,
@@ -371,14 +375,19 @@ def _attach_nia_os_metadata(
     nia_os_context: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    Adjunta metadata interna de NIA OS, document_policy y
-    response_guardrails a la respuesta.
+    Adjunta metadata interna de NIA OS, document_policy,
+    runtime_policy y response_guardrails a la respuesta.
 
     Nota:
     - En producción esta metadata puede ocultarse desde el router si se desea.
     - No debe usarse para exponer configuración sensible al cliente.
     - response_guardrails por ahora NO bloquea ni reescribe la respuesta.
       Solo diagnostica riesgo en modo metadata.
+
+    Integración progresiva NIA OS:
+    - nia_os.intent y nia_os.module_ids indican qué módulos aplicaron.
+    - nia_os.runtime_policy convierte commercial_spine.response_policy
+      en reglas ejecutables observables.
     """
     if not isinstance(response, dict):
         response = {
@@ -386,9 +395,20 @@ def _attach_nia_os_metadata(
             "response": "",
         }
 
+    # --------------------------------------------------------
+    # Runtime policy desde NIA OS
+    # --------------------------------------------------------
+    # Esto conecta el JSON process_commercial_spine_v1.json
+    # con el orquestador de forma segura y observable.
+    # Por ahora NO cambia decisiones; solo deja metadata lista
+    # para la siguiente fase.
+    # --------------------------------------------------------
+    runtime_policy = build_runtime_policy_from_nia_os(nia_os_context)
+
     response["nia_os"] = {
         "intent": nia_os_context.get("nia_os_intent"),
         "module_ids": nia_os_context.get("module_ids", []),
+        "runtime_policy": runtime_policy,
     }
 
     document_policy = nia_os_context.get("document_policy")
