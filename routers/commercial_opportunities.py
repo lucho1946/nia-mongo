@@ -33,7 +33,7 @@ from memory.commercial_opportunity_store import (
     find_commercial_opportunities_by_session,
     find_recent_commercial_opportunities,
 )
-
+from integrations.bitrix_client import build_bitrix_task_preview_from_opportunity
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,55 @@ def get_recent_opportunities(
             detail=f"Error consultando oportunidades recientes: {error}",
         )
 
+@router.get("/{opportunity_id}/bitrix-preview")
+def get_opportunity_bitrix_preview(
+    opportunity_id: str = Path(
+        ...,
+        min_length=1,
+        description="ID de oportunidad comercial generado por NIA.",
+    )
+) -> Dict[str, Any]:
+    """
+    Genera preview seguro de Bitrix para una oportunidad comercial.
+
+    Importante:
+    - No envía nada a Bitrix.
+    - No requiere webhook.
+    - No crea tareas reales.
+    - Solo muestra cómo quedaría la tarea preparada.
+    """
+    try:
+        opportunity = get_commercial_opportunity(opportunity_id)
+
+        if not opportunity:
+            raise HTTPException(
+                status_code=404,
+                detail="Oportunidad comercial no encontrada.",
+            )
+
+        bitrix_preview = build_bitrix_task_preview_from_opportunity(opportunity)
+
+        return {
+            "ok": True,
+            "opportunity_id": opportunity_id,
+            "sent": False,
+            "mode": "preview",
+            "bitrix_preview": bitrix_preview,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception(
+            "Error generando preview Bitrix para oportunidad %s",
+            opportunity_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generando preview Bitrix: {error}",
+        )
+        
 @router.get("/{opportunity_id}")
 def get_opportunity_by_id(
     opportunity_id: str = Path(
