@@ -33,7 +33,10 @@ from memory.commercial_opportunity_store import (
     find_commercial_opportunities_by_session,
     find_recent_commercial_opportunities,
 )
-from integrations.bitrix_client import build_bitrix_task_preview_from_opportunity
+from integrations.bitrix_client import (
+    build_bitrix_task_preview_from_opportunity,
+    create_bitrix_task_from_opportunity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +148,58 @@ def get_opportunity_bitrix_preview(
         raise HTTPException(
             status_code=500,
             detail=f"Error generando preview Bitrix: {error}",
+        )
+
+@router.post("/{opportunity_id}/bitrix-dry-run")
+def dry_run_opportunity_bitrix_task(
+    opportunity_id: str = Path(
+        ...,
+        min_length=1,
+        description="ID de oportunidad comercial generado por NIA.",
+    )
+) -> Dict[str, Any]:
+    """
+    Ejecuta simulación segura de creación de tarea Bitrix.
+
+    Importante:
+    - No envía nada a Bitrix.
+    - Fuerza dry_run=True.
+    - Usa el cliente Bitrix real preparado.
+    - Permite validar el payload final antes de activar envío real.
+    """
+    try:
+        opportunity = get_commercial_opportunity(opportunity_id)
+
+        if not opportunity:
+            raise HTTPException(
+                status_code=404,
+                detail="Oportunidad comercial no encontrada.",
+            )
+
+        bitrix_result = create_bitrix_task_from_opportunity(
+            opportunity,
+            dry_run=True,
+        )
+
+        return {
+            "ok": True,
+            "opportunity_id": opportunity_id,
+            "sent": False,
+            "mode": "dry_run",
+            "bitrix_result": bitrix_result,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as error:
+        logger.exception(
+            "Error ejecutando dry-run Bitrix para oportunidad %s",
+            opportunity_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error ejecutando dry-run Bitrix: {error}",
         )
         
 @router.get("/{opportunity_id}")
