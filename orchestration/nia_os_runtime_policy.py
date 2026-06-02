@@ -285,6 +285,51 @@ def _field_has_value(data: Dict[str, Any], field: str) -> bool:
 
     return value not in [None, "", [], {}]
 
+def _looks_like_data_request(text: Any) -> bool:
+    """
+    Detecta si el texto parece estar pidiendo o confirmando datos.
+
+    Importante:
+    No basta con que aparezca la palabra 'nombre' o 'correo',
+    porque frases como 'Ya tengo nombre y correo' NO deben marcarse
+    como repetición.
+    """
+    normalized = "" if text is None else str(text).lower()
+
+    request_signals = [
+        "me confirmas",
+        "me confirma",
+        "puedes confirmar",
+        "puede confirmar",
+        "confírmame",
+        "confirmame",
+        "confirmar",
+        "me compartes",
+        "me comparte",
+        "puedes compartirme",
+        "compárteme",
+        "comparteme",
+        "me indicas",
+        "me indica",
+        "me das",
+        "me da",
+        "necesito",
+        "necesitaría",
+        "necesitaria",
+        "cuál es",
+        "cual es",
+    ]
+
+    return any(signal in normalized for signal in request_signals)
+
+
+def _text_mentions_any(text: Any, terms: list[str]) -> bool:
+    """
+    Revisa si el texto contiene alguno de los términos dados.
+    """
+    normalized = "" if text is None else str(text).lower()
+
+    return any(term in normalized for term in terms)
 
 def detect_repeated_existing_data_request(
     response: Dict[str, Any],
@@ -296,30 +341,23 @@ def detect_repeated_existing_data_request(
     Solo audita la regla:
     must_not_repeat_existing_data.
 
-    Fuentes revisadas:
-    - response["commercial_data"]
-    - response["context"]
-    - response["commercial_handoff"]
+    Corrección importante:
+    La detección se hace por frase, no por texto completo.
 
-    Campos comerciales:
-    - nombre_cliente / cliente
-    - empresa
-    - correo
-    - telefono
-    - documento_fiscal / nit / rut
+    Ejemplo seguro:
+    "Encontré el código. ¿Me confirmas más detalle del producto?"
 
-    Campos técnicos/producto:
-    - codigo_producto
-    - referencia
-    - marca
-    - voltaje
-    - potencia
-    - medida
+    Aunque el texto completo contiene:
+    - "código"
+    - "me confirmas"
+
+    No debe marcar codigo_producto como repetido porque no aparecen
+    en la misma frase.
     """
     if not isinstance(response, dict):
         response = {}
 
-    response_text = str(response.get("response") or "").lower()
+    response_text = str(response.get("response") or "")
 
     context = _get_nested_dict(response.get("context"))
     commercial_data = _get_nested_dict(response.get("commercial_data"))
@@ -327,131 +365,137 @@ def detect_repeated_existing_data_request(
 
     repeated_fields: list[str] = []
 
-    # --------------------------------------------------------
-    # Datos comerciales
-    # --------------------------------------------------------
-    # nombre
-    if (
-        (
-            _field_has_value(commercial_data, "nombre_cliente")
-            or _field_has_value(commercial_data, "cliente")
-            or _field_has_value(handoff, "cliente")
-        )
-        and (
-            "nombre" in response_text
-            or "cómo te llamas" in response_text
-            or "como te llamas" in response_text
-        )
-    ):
-        repeated_fields.append("nombre")
+    sentences = _split_text_into_sentences(response_text)
 
-    # empresa
-    if (
-        (
-            _field_has_value(commercial_data, "empresa")
-            or _field_has_value(handoff, "empresa")
-        )
-        and "empresa" in response_text
-    ):
-        repeated_fields.append("empresa")
+    if not sentences:
+        sentences = [response_text]
 
-    # correo
-    if (
-        (
-            _field_has_value(commercial_data, "correo")
-            or _field_has_value(handoff, "correo")
-        )
-        and (
-            "correo" in response_text
-            or "email" in response_text
-            or "e-mail" in response_text
-        )
-    ):
-        repeated_fields.append("correo")
+    for sentence in sentences:
+        sentence_text = str(sentence or "").lower()
 
-    # teléfono
-    if (
-        (
-            _field_has_value(commercial_data, "telefono")
-            or _field_has_value(handoff, "telefono")
-        )
-        and (
-            "teléfono" in response_text
-            or "telefono" in response_text
-            or "número de contacto" in response_text
-            or "numero de contacto" in response_text
-        )
-    ):
-        repeated_fields.append("telefono")
+        # Solo analizamos frases que realmente parecen pedir datos.
+        if not _looks_like_data_request(sentence_text):
+            continue
 
-    # documento fiscal / NIT / RUT
-    if (
-        (
-            _field_has_value(commercial_data, "documento_fiscal")
-            or _field_has_value(commercial_data, "nit")
-            or _field_has_value(commercial_data, "rut")
-            or _field_has_value(handoff, "documento_fiscal")
-            or _field_has_value(handoff, "nit")
-            or _field_has_value(handoff, "rut")
-        )
-        and (
-            "documento fiscal" in response_text
-            or "nit" in response_text
-            or "rut" in response_text
-        )
-    ):
-        repeated_fields.append("documento_fiscal")
+        # ----------------------------------------------------
+        # Datos comerciales
+        # ----------------------------------------------------
+        if (
+            (
+                _field_has_value(commercial_data, "nombre_cliente")
+                or _field_has_value(commercial_data, "cliente")
+                or _field_has_value(handoff, "cliente")
+            )
+            and (
+                "nombre" in sentence_text
+                or "cómo te llamas" in sentence_text
+                or "como te llamas" in sentence_text
+            )
+        ):
+            repeated_fields.append("nombre")
 
-    # --------------------------------------------------------
-    # Datos técnicos / producto
-    # --------------------------------------------------------
-    if (
-        _field_has_value(context, "codigo_producto")
-        and (
-            "código" in response_text
-            or "codigo" in response_text
-            or "código de producto" in response_text
-            or "codigo de producto" in response_text
-        )
-    ):
-        repeated_fields.append("codigo_producto")
+        if (
+            (
+                _field_has_value(commercial_data, "empresa")
+                or _field_has_value(handoff, "empresa")
+            )
+            and "empresa" in sentence_text
+        ):
+            repeated_fields.append("empresa")
 
-    if (
-        _field_has_value(context, "referencia")
-        and "referencia" in response_text
-    ):
-        repeated_fields.append("referencia")
+        if (
+            (
+                _field_has_value(commercial_data, "correo")
+                or _field_has_value(handoff, "correo")
+            )
+            and (
+                "correo" in sentence_text
+                or "email" in sentence_text
+                or "e-mail" in sentence_text
+            )
+        ):
+            repeated_fields.append("correo")
 
-    if (
-        _field_has_value(context, "marca")
-        and "marca" in response_text
-    ):
-        repeated_fields.append("marca")
+        if (
+            (
+                _field_has_value(commercial_data, "telefono")
+                or _field_has_value(handoff, "telefono")
+            )
+            and (
+                "teléfono" in sentence_text
+                or "telefono" in sentence_text
+                or "número de contacto" in sentence_text
+                or "numero de contacto" in sentence_text
+            )
+        ):
+            repeated_fields.append("telefono")
 
-    if (
-        _field_has_value(context, "voltaje")
-        and "voltaje" in response_text
-    ):
-        repeated_fields.append("voltaje")
+        if (
+            (
+                _field_has_value(commercial_data, "documento_fiscal")
+                or _field_has_value(commercial_data, "nit")
+                or _field_has_value(commercial_data, "rut")
+                or _field_has_value(handoff, "documento_fiscal")
+                or _field_has_value(handoff, "nit")
+                or _field_has_value(handoff, "rut")
+            )
+            and (
+                "documento fiscal" in sentence_text
+                or "nit" in sentence_text
+                or "rut" in sentence_text
+            )
+        ):
+            repeated_fields.append("documento_fiscal")
 
-    if (
-        _field_has_value(context, "potencia")
-        and "potencia" in response_text
-    ):
-        repeated_fields.append("potencia")
+        # ----------------------------------------------------
+        # Datos técnicos / producto
+        # ----------------------------------------------------
+        if (
+            _field_has_value(context, "codigo_producto")
+            and (
+                "código" in sentence_text
+                or "codigo" in sentence_text
+                or "código de producto" in sentence_text
+                or "codigo de producto" in sentence_text
+            )
+        ):
+            repeated_fields.append("codigo_producto")
 
-    if (
-        _field_has_value(context, "medida")
-        and (
-            "medida" in response_text
-            or "capacidad" in response_text
-            or "tamaño" in response_text
-            or "tamano" in response_text
-        )
-    ):
-        repeated_fields.append("medida")
+        if (
+            _field_has_value(context, "referencia")
+            and "referencia" in sentence_text
+        ):
+            repeated_fields.append("referencia")
 
-    # Quitamos duplicados conservando orden.
+        if (
+            _field_has_value(context, "marca")
+            and "marca" in sentence_text
+        ):
+            repeated_fields.append("marca")
+
+        if (
+            _field_has_value(context, "voltaje")
+            and "voltaje" in sentence_text
+        ):
+            repeated_fields.append("voltaje")
+
+        if (
+            _field_has_value(context, "potencia")
+            and "potencia" in sentence_text
+        ):
+            repeated_fields.append("potencia")
+
+        if (
+            _field_has_value(context, "medida")
+            and (
+                "medida" in sentence_text
+                or "capacidad" in sentence_text
+                or "tamaño" in sentence_text
+                or "tamano" in sentence_text
+            )
+        ):
+            repeated_fields.append("medida")
+
     repeated_fields = list(dict.fromkeys(repeated_fields))
 
     return {
@@ -547,8 +591,16 @@ def _split_text_into_sentences(text: str) -> list[str]:
     """
     Divide texto en frases simples conservando separadores básicos.
 
-    No busca perfección lingüística; solo necesitamos una separación
-    segura para detectar y conservar la primera pregunta.
+    Importante:
+    También separa por saltos de línea y por pipes '|', porque las
+    respuestas comerciales de NIA suelen venir así:
+
+    Producto | Marca | Código | Precio
+
+    Para continuar, ¿me confirmas...?
+
+    Si no separamos esos bloques, el auditor puede mezclar una mención
+    de código con una pregunta posterior y marcar un falso positivo.
     """
     import re
 
@@ -557,7 +609,11 @@ def _split_text_into_sentences(text: str) -> list[str]:
     if not text:
         return []
 
-    parts = re.split(r"(?<=[\.\?\!])\s+", text)
+    # Normalizamos separadores comunes de las respuestas comerciales.
+    normalized = text.replace("|", ". ")
+    normalized = re.sub(r"\n+", ". ", normalized)
+
+    parts = re.split(r"(?<=[\.\?\!])\s+", normalized)
 
     return [
         part.strip()
@@ -763,6 +819,106 @@ def append_safe_next_step_if_missing(
 
     return f"{text}\n\n{next_step}".strip()
 
+def remove_repeated_existing_data_request(
+    response_text: Any,
+    repeated_fields: list[str],
+) -> str:
+    """
+    Elimina preguntas donde NIA vuelve a pedir datos que ya existen.
+
+    Ejemplo:
+    Entrada:
+    "Gracias. ¿Me confirmas nombre, empresa y correo?"
+
+    Salida:
+    "Gracias."
+
+    No inventa datos.
+    No modifica productos, precios, stock ni disponibilidad.
+    """
+    text = "" if response_text is None else str(response_text).strip()
+
+    if not text or not repeated_fields:
+        return text
+
+    sentences = _split_text_into_sentences(text)
+
+    if not sentences:
+        return text
+
+    repeated_terms_by_field = {
+        "nombre": ["nombre", "cómo te llamas", "como te llamas"],
+        "empresa": ["empresa"],
+        "correo": ["correo", "email", "e-mail"],
+        "telefono": ["teléfono", "telefono", "número de contacto", "numero de contacto"],
+        "documento_fiscal": ["documento fiscal", "nit", "rut"],
+        "codigo_producto": ["código", "codigo", "código de producto", "codigo de producto"],
+        "referencia": ["referencia"],
+        "marca": ["marca"],
+        "voltaje": ["voltaje"],
+        "potencia": ["potencia"],
+        "medida": ["medida", "capacidad", "tamaño", "tamano"],
+    }
+
+    kept: list[str] = []
+
+    for sentence in sentences:
+        sentence_lower = sentence.lower()
+
+        sentence_is_repeated_request = False
+
+        if _looks_like_data_request(sentence_lower):
+            for field in repeated_fields:
+                terms = repeated_terms_by_field.get(field, [field])
+
+                if _text_mentions_any(sentence_lower, terms):
+                    sentence_is_repeated_request = True
+                    break
+
+        if sentence_is_repeated_request:
+            continue
+
+        kept.append(sentence)
+
+    cleaned = " ".join(kept).strip()
+
+    return cleaned or text
+
+
+def append_safe_next_step_after_repeated_data(
+    response_text: Any,
+    *,
+    repeated_fields: list[str],
+) -> str:
+    """
+    Agrega un siguiente paso seguro después de quitar una pregunta repetida.
+
+    Importante:
+    No listamos los campos repetidos en el texto final.
+    Ejemplo: evitamos decir "nombre, empresa, correo",
+    porque el auditor puede volver a detectar esas palabras como solicitud repetida.
+
+    No inventa información comercial.
+    Solo orienta el flujo.
+    """
+    text = "" if response_text is None else str(response_text).strip()
+
+    if not repeated_fields:
+        return text
+
+    next_step = (
+        "Ya tengo los datos necesarios. "
+        "Puedo dejar la solicitud en proceso para revisión del asesor."
+    )
+
+    if not text:
+        return next_step
+
+    if has_next_step_signal(text):
+        return text
+
+    return f"{text}\n\n{next_step}".strip()
+
 def enforce_response_against_runtime_policy(
     response: Dict[str, Any],
     nia_os_context: Dict[str, Any],
@@ -845,6 +1001,32 @@ def enforce_response_against_runtime_policy(
 
         enforcement["applied"] = True
         enforcement["reasons"].append("missing_next_step")
+        
+    # --------------------------------------------------------
+    # 3. Corregir solicitud repetida de datos existentes
+    # --------------------------------------------------------
+    repeated_check = evaluate_response_against_runtime_policy(
+        response=response,
+        nia_os_context=nia_os_context,
+    )
+
+    if "repeated_existing_data_request" in repeated_check.get("flags", []):
+        repeated_data = repeated_check.get("repeated_existing_data") or {}
+        repeated_fields = repeated_data.get("repeated_fields", [])
+
+        response["response"] = remove_repeated_existing_data_request(
+            response.get("response", ""),
+            repeated_fields=repeated_fields,
+        )
+
+        response["response"] = append_safe_next_step_after_repeated_data(
+            response.get("response", ""),
+            repeated_fields=repeated_fields,
+        )
+
+        enforcement["applied"] = True
+        enforcement["reasons"].append("repeated_existing_data_request")
+        enforcement["repeated_fields"] = repeated_fields
 
     final_check = evaluate_response_against_runtime_policy(
         response=response,

@@ -18,6 +18,7 @@ from orchestration.nia_os_runtime_policy import (
     enforce_response_against_runtime_policy,
     evaluate_response_against_runtime_policy,
     has_next_step_signal,
+    remove_repeated_existing_data_request,
 )
 
 
@@ -217,6 +218,86 @@ def run_case_enforce_missing_next_step():
         "Debe registrar missing_next_step como razón.",
     )
 
+def run_case_enforce_repeated_existing_data():
+    print_section("CASO 5: enforcement elimina pregunta de datos repetidos")
+
+    nia_os_context = build_nia_os_context("comercial")
+
+    response = {
+        "intent": "comercial",
+        "response": (
+            "Gracias por la información. "
+            "Para continuar con la cotización, ¿me confirmas nombre, empresa y correo?"
+        ),
+        "commercial_data": {
+            "nombre_cliente": "Luis Diaz",
+            "empresa": "Viaindustrial",
+            "correo": "luis2004diazalzate@gmail.com",
+        },
+    }
+
+    before = evaluate_response_against_runtime_policy(
+        response=response,
+        nia_os_context=nia_os_context,
+    )
+
+    fixed_response = enforce_response_against_runtime_policy(
+        response=response,
+        nia_os_context=nia_os_context,
+    )
+
+    after = evaluate_response_against_runtime_policy(
+        response=fixed_response,
+        nia_os_context=nia_os_context,
+    )
+
+    show_json("REPEATED DATA ENFORCEMENT RESULT", {
+        "before": before,
+        "fixed_response": fixed_response,
+        "after": after,
+    })
+
+    assert_condition(
+        "repeated_existing_data_request" in before.get("flags", []),
+        "Antes debe detectar repeated_existing_data_request.",
+    )
+
+    assert_condition(
+        "me confirmas nombre, empresa y correo" not in fixed_response.get("response", "").lower(),
+        "La respuesta corregida no debe pedir nombre, empresa y correo otra vez.",
+    )
+
+    assert_condition(
+    "Ya tengo los datos necesarios" in fixed_response.get("response", ""),
+    "Debe indicar que ya tiene los datos necesarios sin repetir campos.",
+    )
+    
+    assert_condition(
+    "Ya tengo nombre, empresa, correo" not in fixed_response.get("response", ""),
+    "No debe listar los campos repetidos en la respuesta corregida.",
+    )
+
+    assert_condition(
+        after.get("ok") is True,
+        "Después del enforcement debe cumplir la política.",
+    )
+
+    enforcement = fixed_response.get("nia_os_runtime_enforcement") or {}
+
+    assert_condition(
+        enforcement.get("applied") is True,
+        "Debe marcar enforcement aplicado.",
+    )
+
+    assert_condition(
+        "repeated_existing_data_request" in enforcement.get("reasons", []),
+        "Debe registrar repeated_existing_data_request como razón.",
+    )
+
+    assert_condition(
+        set(enforcement.get("repeated_fields", [])) == {"nombre", "empresa", "correo"},
+        "Debe conservar los campos repetidos corregidos.",
+    )
     
 def main():
     print("=" * 70)
@@ -227,6 +308,7 @@ def main():
     run_case_enforce_response()
     run_case_no_enforcement_needed()
     run_case_enforce_missing_next_step()
+    run_case_enforce_repeated_existing_data()
 
     print("\nFIN TEST NIA OS RUNTIME POLICY ENFORCEMENT ✅")
 

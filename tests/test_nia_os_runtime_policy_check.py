@@ -293,6 +293,42 @@ def run_case_policy_flags_repeated_existing_data():
         "El resultado debe conservar los campos repetidos.",
     )
 
+def run_case_policy_does_not_flag_code_mention_as_repeated_request():
+    print_section("CASO 7: no marca código solo por mencionarlo")
+
+    nia_os_context = build_nia_os_context("codigo_producto")
+
+    response = {
+        "intent": "codigo_producto",
+        "response": (
+            "Encontré el código, pero no pude recuperar información suficiente. "
+            "¿Me confirmas más detalle del producto?"
+        ),
+        "context": {
+            "codigo_producto": "300203",
+            "referencia": "300203",
+        },
+    }
+
+    result = evaluate_response_against_runtime_policy(
+        response=response,
+        nia_os_context=nia_os_context,
+    )
+
+    show_json("POLICY CHECK CODE MENTION", result)
+
+    assert_condition(
+        "repeated_existing_data_request" not in result.get("flags", []),
+        "No debe marcar codigo_producto repetido si solo se menciona en otra frase.",
+    )
+
+    repeated_data = result.get("repeated_existing_data") or {}
+
+    assert_condition(
+        repeated_data.get("has_repeated_existing_data_request") is False,
+        "No debe detectar datos repetidos en este caso.",
+    )
+    
 def main():
     print("=" * 70)
     print("NIA OS RUNTIME POLICY CHECK TEST")
@@ -304,6 +340,7 @@ def main():
     run_case_orchestrator_attaches_policy_check()
     run_case_policy_flags_missing_next_step()
     run_case_policy_flags_repeated_existing_data()
+    run_case_policy_does_not_flag_code_mention_as_repeated_request()
 
     print("\nFIN TEST NIA OS RUNTIME POLICY CHECK ✅")
     
