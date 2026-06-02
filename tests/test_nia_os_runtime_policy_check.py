@@ -16,6 +16,7 @@ from orchestration.nia_os_runtime_policy import (
     count_questions_in_text,
     evaluate_response_against_runtime_policy,
     has_next_step_signal,
+    detect_repeated_existing_data_request,
 )
 from orchestration.nia_orchestrator import process_message
 
@@ -202,20 +203,6 @@ def run_case_policy_flags_missing_next_step():
         "Debe indicar que no hay siguiente paso.",
     )
 
-
-def main():
-    print("=" * 70)
-    print("NIA OS RUNTIME POLICY CHECK TEST")
-    print("=" * 70)
-
-    run_case_count_questions()
-    run_case_policy_allows_one_question()
-    run_case_policy_flags_multiple_questions()
-    run_case_orchestrator_attaches_policy_check()
-    run_case_policy_flags_missing_next_step()
-
-    print("\nFIN TEST NIA OS RUNTIME POLICY CHECK ✅")
-
 def run_case_policy_flags_missing_next_step():
     print_section("CASO 5: política detecta falta de siguiente paso")
 
@@ -246,6 +233,79 @@ def run_case_policy_flags_missing_next_step():
         result.get("includes_next_step") is False,
         "Debe indicar que no hay siguiente paso.",
     )
+    
+def run_case_policy_flags_repeated_existing_data():
+    print_section("CASO 6: política detecta datos ya existentes repetidos")
+
+    nia_os_context = build_nia_os_context("comercial")
+
+    response = {
+        "response": (
+            "Para continuar con la cotización, "
+            "¿me confirmas nombre, empresa y correo?"
+        ),
+        "commercial_data": {
+            "nombre_cliente": "Luis Diaz",
+            "empresa": "Viaindustrial",
+            "correo": "luis2004diazalzate@gmail.com",
+        },
+    }
+
+    direct_check = detect_repeated_existing_data_request(response)
+
+    result = evaluate_response_against_runtime_policy(
+        response=response,
+        nia_os_context=nia_os_context,
+    )
+
+    show_json("REPEATED DATA DIRECT CHECK", direct_check)
+    show_json("POLICY CHECK REPEATED DATA", result)
+
+    assert_condition(
+        direct_check.get("has_repeated_existing_data_request") is True,
+        "Debe detectar solicitud repetida de datos existentes.",
+    )
+
+    assert_condition(
+        set(direct_check.get("repeated_fields", [])) == {"nombre", "empresa", "correo"},
+        "Debe detectar nombre, empresa y correo repetidos.",
+    )
+
+    assert_condition(
+        result.get("ok") is False,
+        "La política debe marcar no ok si repite datos existentes.",
+    )
+
+    assert_condition(
+        "must_not_repeat_existing_data" in result.get("checked_rules", []),
+        "Debe auditar must_not_repeat_existing_data.",
+    )
+
+    assert_condition(
+        "repeated_existing_data_request" in result.get("flags", []),
+        "Debe marcar repeated_existing_data_request.",
+    )
+
+    repeated_data = result.get("repeated_existing_data") or {}
+
+    assert_condition(
+        set(repeated_data.get("repeated_fields", [])) == {"nombre", "empresa", "correo"},
+        "El resultado debe conservar los campos repetidos.",
+    )
+
+def main():
+    print("=" * 70)
+    print("NIA OS RUNTIME POLICY CHECK TEST")
+    print("=" * 70)
+
+    run_case_count_questions()
+    run_case_policy_allows_one_question()
+    run_case_policy_flags_multiple_questions()
+    run_case_orchestrator_attaches_policy_check()
+    run_case_policy_flags_missing_next_step()
+    run_case_policy_flags_repeated_existing_data()
+
+    print("\nFIN TEST NIA OS RUNTIME POLICY CHECK ✅")
     
 if __name__ == "__main__":
     main()

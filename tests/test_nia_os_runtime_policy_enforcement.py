@@ -217,7 +217,7 @@ def run_case_enforce_missing_next_step():
         "Debe registrar missing_next_step como razón.",
     )
 
-
+    
 def main():
     print("=" * 70)
     print("NIA OS RUNTIME POLICY ENFORCEMENT TEST")

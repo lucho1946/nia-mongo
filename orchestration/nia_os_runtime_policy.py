@@ -267,7 +267,198 @@ def has_next_step_signal(text: Any) -> bool:
 
     return any(signal in normalized for signal in next_step_signals)
 
+def _get_nested_dict(value: Any) -> Dict[str, Any]:
+    """
+    Devuelve un dict seguro.
+    """
+    return value if isinstance(value, dict) else {}
 
+
+def _field_has_value(data: Dict[str, Any], field: str) -> bool:
+    """
+    Determina si un campo existe y tiene valor útil.
+    """
+    if not isinstance(data, dict):
+        return False
+
+    value = data.get(field)
+
+    return value not in [None, "", [], {}]
+
+
+def detect_repeated_existing_data_request(
+    response: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Detecta si NIA está pidiendo datos que ya existen en memoria.
+
+    Esta función NO modifica la respuesta.
+    Solo audita la regla:
+    must_not_repeat_existing_data.
+
+    Fuentes revisadas:
+    - response["commercial_data"]
+    - response["context"]
+    - response["commercial_handoff"]
+
+    Campos comerciales:
+    - nombre_cliente / cliente
+    - empresa
+    - correo
+    - telefono
+    - documento_fiscal / nit / rut
+
+    Campos técnicos/producto:
+    - codigo_producto
+    - referencia
+    - marca
+    - voltaje
+    - potencia
+    - medida
+    """
+    if not isinstance(response, dict):
+        response = {}
+
+    response_text = str(response.get("response") or "").lower()
+
+    context = _get_nested_dict(response.get("context"))
+    commercial_data = _get_nested_dict(response.get("commercial_data"))
+    handoff = _get_nested_dict(response.get("commercial_handoff"))
+
+    repeated_fields: list[str] = []
+
+    # --------------------------------------------------------
+    # Datos comerciales
+    # --------------------------------------------------------
+    # nombre
+    if (
+        (
+            _field_has_value(commercial_data, "nombre_cliente")
+            or _field_has_value(commercial_data, "cliente")
+            or _field_has_value(handoff, "cliente")
+        )
+        and (
+            "nombre" in response_text
+            or "cómo te llamas" in response_text
+            or "como te llamas" in response_text
+        )
+    ):
+        repeated_fields.append("nombre")
+
+    # empresa
+    if (
+        (
+            _field_has_value(commercial_data, "empresa")
+            or _field_has_value(handoff, "empresa")
+        )
+        and "empresa" in response_text
+    ):
+        repeated_fields.append("empresa")
+
+    # correo
+    if (
+        (
+            _field_has_value(commercial_data, "correo")
+            or _field_has_value(handoff, "correo")
+        )
+        and (
+            "correo" in response_text
+            or "email" in response_text
+            or "e-mail" in response_text
+        )
+    ):
+        repeated_fields.append("correo")
+
+    # teléfono
+    if (
+        (
+            _field_has_value(commercial_data, "telefono")
+            or _field_has_value(handoff, "telefono")
+        )
+        and (
+            "teléfono" in response_text
+            or "telefono" in response_text
+            or "número de contacto" in response_text
+            or "numero de contacto" in response_text
+        )
+    ):
+        repeated_fields.append("telefono")
+
+    # documento fiscal / NIT / RUT
+    if (
+        (
+            _field_has_value(commercial_data, "documento_fiscal")
+            or _field_has_value(commercial_data, "nit")
+            or _field_has_value(commercial_data, "rut")
+            or _field_has_value(handoff, "documento_fiscal")
+            or _field_has_value(handoff, "nit")
+            or _field_has_value(handoff, "rut")
+        )
+        and (
+            "documento fiscal" in response_text
+            or "nit" in response_text
+            or "rut" in response_text
+        )
+    ):
+        repeated_fields.append("documento_fiscal")
+
+    # --------------------------------------------------------
+    # Datos técnicos / producto
+    # --------------------------------------------------------
+    if (
+        _field_has_value(context, "codigo_producto")
+        and (
+            "código" in response_text
+            or "codigo" in response_text
+            or "código de producto" in response_text
+            or "codigo de producto" in response_text
+        )
+    ):
+        repeated_fields.append("codigo_producto")
+
+    if (
+        _field_has_value(context, "referencia")
+        and "referencia" in response_text
+    ):
+        repeated_fields.append("referencia")
+
+    if (
+        _field_has_value(context, "marca")
+        and "marca" in response_text
+    ):
+        repeated_fields.append("marca")
+
+    if (
+        _field_has_value(context, "voltaje")
+        and "voltaje" in response_text
+    ):
+        repeated_fields.append("voltaje")
+
+    if (
+        _field_has_value(context, "potencia")
+        and "potencia" in response_text
+    ):
+        repeated_fields.append("potencia")
+
+    if (
+        _field_has_value(context, "medida")
+        and (
+            "medida" in response_text
+            or "capacidad" in response_text
+            or "tamaño" in response_text
+            or "tamano" in response_text
+        )
+    ):
+        repeated_fields.append("medida")
+
+    # Quitamos duplicados conservando orden.
+    repeated_fields = list(dict.fromkeys(repeated_fields))
+
+    return {
+        "has_repeated_existing_data_request": len(repeated_fields) > 0,
+        "repeated_fields": repeated_fields,
+    }
+    
 def evaluate_response_against_runtime_policy(
     response: Dict[str, Any],
     nia_os_context: Dict[str, Any],
@@ -281,6 +472,7 @@ def evaluate_response_against_runtime_policy(
     Reglas auditadas:
     - max_questions_per_turn.
     - must_include_next_step.
+    - must_not_repeat_existing_data.
     """
     if not isinstance(response, dict):
         response = {}
@@ -297,9 +489,15 @@ def evaluate_response_against_runtime_policy(
 
     flags = []
 
+    # --------------------------------------------------------
+    # Regla 1: máximo de preguntas por turno
+    # --------------------------------------------------------
     if question_count > max_questions:
         flags.append("too_many_questions_in_turn")
 
+    # --------------------------------------------------------
+    # Regla 2: incluir siguiente paso
+    # --------------------------------------------------------
     must_include_next_step = policy.get("must_include_next_step") is True
     includes_next_step = has_next_step_signal(response_text)
 
@@ -308,6 +506,26 @@ def evaluate_response_against_runtime_policy(
 
         if not includes_next_step:
             flags.append("missing_next_step")
+
+    # --------------------------------------------------------
+    # Regla 3: no repetir datos existentes
+    # --------------------------------------------------------
+    must_not_repeat_existing_data = (
+        policy.get("must_not_repeat_existing_data") is True
+    )
+
+    repeated_data_check = {
+        "has_repeated_existing_data_request": False,
+        "repeated_fields": [],
+    }
+
+    if must_not_repeat_existing_data:
+        checked_rules.append("must_not_repeat_existing_data")
+
+        repeated_data_check = detect_repeated_existing_data_request(response)
+
+        if repeated_data_check.get("has_repeated_existing_data_request") is True:
+            flags.append("repeated_existing_data_request")
 
     ok = len(flags) == 0
 
@@ -320,6 +538,8 @@ def evaluate_response_against_runtime_policy(
         "max_questions_per_turn": max_questions,
         "must_include_next_step": must_include_next_step,
         "includes_next_step": includes_next_step,
+        "must_not_repeat_existing_data": must_not_repeat_existing_data,
+        "repeated_existing_data": repeated_data_check,
         "recommendation": "allow" if ok else "review",
     }
     
