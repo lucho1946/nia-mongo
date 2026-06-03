@@ -45,6 +45,7 @@ TESTS_DIR = Path(__file__).resolve().parent
 # ============================================================
 
 REGRESSION_SCRIPTS = [
+    "test_catalog_line_matcher.py",
     "test_openai_service_config.py",
     "test_openai_intent_interpreter.py",
     "test_semantic_need_profiles.py",
