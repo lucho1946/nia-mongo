@@ -212,6 +212,13 @@ def adapt_orchestrator_result_to_chat_response(
         productos=productos,
         requiere_accion=requiere_accion,
 
+        # Metadata de trazabilidad para frontend/debug.
+        # Estos campos vienen SIEMPRE del orquestador.
+        # chat.py no los decide y el adapter solo los copia al contrato público.
+        decision_reason=orchestrator_result.get("decision_reason"),
+        nia_os=orchestrator_result.get("nia_os") or {},
+        context=orchestrator_result.get("context") or {},
+
         # Metadata comercial.
         estado_negociacion=orchestrator_result.get("estado_negociacion"),
         commercial_process_state=orchestrator_result.get("commercial_process_state"),

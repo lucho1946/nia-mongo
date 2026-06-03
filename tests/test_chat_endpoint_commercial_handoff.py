@@ -51,12 +51,44 @@ def show_json(label: str, data):
     print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
 
 
-def assert_no_internal_metadata(payload: dict):
+def assert_public_metadata_contract(payload: dict):
     """
-    Verifica que el endpoint público no filtre metadata interna.
+    Valida el contrato público actualizado de /chat.
+
+    Por decisión de integración, /chat ahora SÍ expone:
+    - decision_reason
+    - nia_os
+    - context
+
+    Pero NO debe exponer metadata interna suelta en la raíz.
     """
-    forbidden_fields = {
-        "nia_os",
+
+    assert_condition(
+        "decision_reason" in payload,
+        "El contrato público debe incluir decision_reason.",
+    )
+
+    assert_condition(
+        "nia_os" in payload,
+        "El contrato público debe incluir nia_os.",
+    )
+
+    assert_condition(
+        "context" in payload,
+        "El contrato público debe incluir context.",
+    )
+
+    assert_condition(
+        payload.get("nia_os") is None or isinstance(payload.get("nia_os"), dict),
+        "nia_os debe ser dict o null.",
+    )
+
+    assert_condition(
+        payload.get("context") is None or isinstance(payload.get("context"), dict),
+        "context debe ser dict o null.",
+    )
+
+    forbidden_root_fields = {
         "runtime_policy",
         "runtime_policy_check",
         "document_policy",
@@ -66,13 +98,15 @@ def assert_no_internal_metadata(payload: dict):
         "module_ids",
         "guardrails",
         "commercial_spine",
+        "openai_intent_interpreter",
+        "semantic_profile",
     }
 
-    leaked = forbidden_fields.intersection(set(payload.keys()))
+    leaked = forbidden_root_fields.intersection(set(payload.keys()))
 
     assert_condition(
         not leaked,
-        f"No debe exponer metadata interna en /chat. Campos filtrados: {sorted(leaked)}",
+        f"No debe exponer metadata interna suelta en raíz. Campos filtrados: {sorted(leaked)}",
     )
 
 
@@ -100,8 +134,7 @@ def run_case_endpoint_web_handoff_after_customer_data():
 
     show_json("RESPUESTA WEB TURNO 1", p1)
 
-    assert_no_internal_metadata(p1)
-
+    assert_public_metadata_contract(p1)
     assert_condition(
         p1.get("session_id"),
         "Turno 1 debe devolver session_id.",
@@ -141,8 +174,7 @@ def run_case_endpoint_web_handoff_after_customer_data():
 
     show_json("RESPUESTA WEB TURNO 2", p2)
 
-    assert_no_internal_metadata(p2)
-
+    assert_public_metadata_contract(p2)
     handoff = p2.get("commercial_handoff")
 
     assert_condition(
@@ -207,7 +239,7 @@ def run_case_endpoint_whatsapp_handoff_with_channel_phone():
 
     show_json("RESPUESTA WHATSAPP", payload)
 
-    assert_no_internal_metadata(payload)
+    assert_public_metadata_contract(payload)
 
     handoff = payload.get("commercial_handoff")
 

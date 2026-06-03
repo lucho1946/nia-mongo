@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import re
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict, Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -239,6 +239,9 @@ class ChatResponse(BaseModel):
     preguntas_hechas: int = 0
     productos: List[ProductoResponse] = Field(default_factory=list)
     requiere_accion: Optional[str] = None
+    decision_reason: Optional[str] = None
+    nia_os: Optional[Dict[str, Any]] = None
+    context: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------
     # Metadata comercial / Commercial Spine

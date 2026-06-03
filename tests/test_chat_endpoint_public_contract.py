@@ -59,16 +59,16 @@ def assert_no_internal_metadata(payload: dict):
     Verifica que el endpoint público /chat no filtre metadata interna.
     """
     forbidden_fields = {
-        "nia_os",
-        "runtime_policy",
-        "runtime_policy_check",
-        "document_policy",
-        "response_guardrails",
-        "nia_os_runtime_enforcement",
-        "modules",
-        "module_ids",
-        "guardrails",
-        "commercial_spine",
+    "runtime_policy",
+    "runtime_policy_check",
+    "document_policy",
+    "response_guardrails",
+    "nia_os_runtime_enforcement",
+    "modules",
+    "module_ids",
+    "guardrails",
+    "commercial_spine",
+    "openai_intent_interpreter",
     }
 
     leaked = forbidden_fields.intersection(set(payload.keys()))
@@ -76,6 +76,15 @@ def assert_no_internal_metadata(payload: dict):
     assert_condition(
         not leaked,
         f"No debe exponer metadata interna en /chat. Campos filtrados: {sorted(leaked)}",
+    )
+    assert_condition(
+    payload.get("nia_os") is None or isinstance(payload.get("nia_os"), dict),
+    "nia_os debe ser dict o null.",
+    )
+
+    assert_condition(
+    payload.get("context") is None or isinstance(payload.get("context"), dict),
+    "context debe ser dict o null.",
     )
 
 

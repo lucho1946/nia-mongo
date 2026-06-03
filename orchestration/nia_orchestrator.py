@@ -102,12 +102,22 @@ from orchestration.commercial_proforma import (
     build_commercial_proforma_response,
     build_commercial_proforma_data_capture_response,
 )
+
 from orchestration.commercial_state_engine import (
     update_commercial_process_state,
 )
+
 from orchestration.commercial_handoff import (
     attach_commercial_handoff,
 )
+
+from orchestration.openai_intent_interpreter import (
+    interpret_open_customer_need,
+)
+from knowledge.semantic_need_profiles import (
+    filter_results_for_interpreted_need,
+)
+
 from memory.commercial_opportunity_store import (
     save_commercial_opportunity,
 )
@@ -1760,6 +1770,10 @@ def process_message(
     )
 
     context = session.get("context", {})
+    
+    # Interpretación auxiliar con OpenAI/fallback.
+    # Solo se usa para necesidades abiertas; no reemplaza el intent_router.
+    openai_intent_interpretation: Optional[Dict[str, Any]] = None
 
     # --------------------------------------------------------
     # 3.1. Evaluar política documental
@@ -2161,13 +2175,73 @@ def process_message(
         return _attach_nia_os_metadata(final_response, nia_os_context)
 
     # --------------------------------------------------------
-    # 7. Búsqueda preliminar con contexto acumulado
+    # 7. Interpretación IA/fallback para necesidades abiertas
     # --------------------------------------------------------
-    search_query = _build_search_query(
-        message=message,
-        context=context,
-    )
+    #
+    # Si el intent_router no detecta producto y deja intent=general,
+    # usamos OpenAI/fallback para convertir lenguaje natural en una
+    # query segura de catálogo.
+    #
+    # Importante:
+    # - No se usa para códigos exactos.
+    # - No se usa para saludos puros.
+    # - No reemplaza catálogo.
+    # - No inventa producto, precio ni stock.
+    # --------------------------------------------------------
+    if (
+        detected_intent in ["general", "producto"]
+        and not context.get("codigo_producto")
+        and not context.get("referencia")
+    ):
+        openai_intent_interpretation = interpret_open_customer_need(
+            message,
+            session_context=context,
+        )
 
+        if (
+            openai_intent_interpretation.get("ok") is True
+            and openai_intent_interpretation.get("needs_catalog_search") is True
+            and openai_intent_interpretation.get("intent_candidate") in ["producto", "cotizacion"]
+            and openai_intent_interpretation.get("normalized_query")
+        ):
+            detected_intent = "producto"
+            intent_data = {
+                **intent_data,
+                "intent": "producto",
+                "openai_intent_interpreter": openai_intent_interpretation,
+            }
+
+            # Recalculamos contexto NIA OS porque la intención efectiva
+            # ya no es "general", sino producto.
+            nia_os_context = build_nia_os_context(detected_intent)
+            nia_os_context["document_policy"] = document_policy
+
+            session["openai_intent_interpreter"] = openai_intent_interpretation
+
+    # --------------------------------------------------------
+    # 7.1 Búsqueda preliminar con contexto acumulado
+    # --------------------------------------------------------
+    if (
+        openai_intent_interpretation
+        and openai_intent_interpretation.get("normalized_query")
+        and openai_intent_interpretation.get("needs_catalog_search") is True
+    ):
+        search_query = str(openai_intent_interpretation.get("normalized_query")).strip()
+    else:
+        search_query = _build_search_query(
+            message=message,
+            context=context,
+        )
+        
+    # --------------------------------------------------------
+    # 7.2 Ejecutar búsqueda y preparar resultados compatibles
+    # --------------------------------------------------------
+    # Ya tenemos search_query definido:
+    # - desde OpenAI/fallback si era necesidad abierta
+    # - desde _build_search_query si era flujo normal
+    #
+    # Ahora sí ejecutamos catálogo real.
+    # --------------------------------------------------------
     preliminary_results = _safe_search_products(search_query)
 
     compatible_results = _filter_compatible_results(
@@ -2176,15 +2250,75 @@ def process_message(
         max_items=10,
     )
 
+    # --------------------------------------------------------
+    # Filtro semántico para necesidades abiertas interpretadas
+    # --------------------------------------------------------
+    # Si la búsqueda viene desde OpenAI/fallback, aplicamos perfiles
+    # semánticos desde knowledge/semantic_need_profiles.py.
+    #
+    # Esto evita falsos positivos como:
+    # - medidores de agua cuando el cliente pidió velocidad de aire;
+    # - radares de autos cuando el cliente pidió ductos/ventilación;
+    # - productos incompatibles por coincidencias textuales débiles.
+    #
+    # Importante:
+    # - No busca productos.
+    # - No inventa productos.
+    # - Solo filtra resultados reales que ya vinieron del catálogo.
+    # --------------------------------------------------------
+    if openai_intent_interpretation:
+        compatible_results = filter_results_for_interpreted_need(
+            results=compatible_results,
+            interpretation=openai_intent_interpretation,
+            max_items=10,
+        )
+
     catalog_knowledge = _build_catalog_knowledge_from_results(
         preliminary_results,
         context=context,
     )
 
     technical_questions_asked = get_technical_questions_asked(session)
+
+    # --------------------------------------------------------
+    # 7.3 Recomendación desde necesidad abierta interpretada
+    # --------------------------------------------------------
+    # Si OpenAI/fallback convirtió una necesidad abierta en query
+    # y el catálogo devolvió resultados, recomendamos usando SOLO
+    # productos reales.
+    # --------------------------------------------------------
+    if (
+        openai_intent_interpretation
+        and openai_intent_interpretation.get("needs_catalog_search") is True
+        and compatible_results
+    ):
+        save_last_results(session, compatible_results)
+        reset_technical_questions(session)
+        clear_last_assistant_question(session)
+
+        payload = _build_payload_from_results("producto", compatible_results)
+
+        final_response = generate_response(
+            intent_data={
+                **intent_data,
+                "intent": "producto",
+            },
+            search_payload=payload,
+        )
+
+        append_assistant_message(session, final_response.get("response", ""))
+        save_session(session)
+
+        final_response["session_id"] = session_id
+        final_response["context"] = context
+        final_response["decision_reason"] = "openai_interpreted_open_need"
+        final_response["compatible_count"] = len(compatible_results)
+        final_response["openai_intent_interpreter"] = openai_intent_interpretation
+
+        return _attach_nia_os_metadata(final_response, nia_os_context)
     
     # --------------------------------------------------------
-    # 7.1. Regla fuerte para torquímetros
+    # 7.4 Regla fuerte para torquímetros
     # --------------------------------------------------------
     # Si el usuario pide un torquímetro pero aún no dio capacidad,
     # NIA debe preguntar la medida antes de recomendar.

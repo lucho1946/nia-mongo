@@ -219,8 +219,33 @@ def fallback_interpret_open_need(message: str) -> Dict[str, Any]:
     normalized_query = raw
 
     # Mejoramos algunos casos frecuentes sin usar IA.
-    if "velocidad del aire" in msg or "ducto" in msg or "ductos" in msg:
+    semantic_profile = None
+    family_hint = None
+    subtype_hint = None
+    positive_terms: List[str] = []
+    negative_terms: List[str] = []
+
+    if "velocidad del aire" in msg or "ducto" in msg or "ductos" in msg or "ventilacion" in msg:
         normalized_query = "anemómetro medidor velocidad aire ductos ventilación"
+        semantic_profile = "velocidad_aire"
+        family_hint = "medicion"
+        subtype_hint = "velocidad_aire"
+        positive_terms = [
+            "anemómetro",
+            "velocidad del aire",
+            "flujo de aire",
+            "ductos",
+            "ventilación",
+            "filtro de aire",
+        ]
+        negative_terms = [
+            "agua",
+            "acueducto",
+            "autos",
+            "radar",
+            "gasolina",
+            "metales",
+        ]
 
     return {
         "ok": True,
@@ -230,6 +255,11 @@ def fallback_interpret_open_need(message: str) -> Dict[str, Any]:
         "intent_candidate": intent,
         "confidence": 0.55 if intent != "general" else 0.2,
         "normalized_query": normalized_query,
+        "semantic_profile": semantic_profile,
+        "family_hint": family_hint,
+        "subtype_hint": subtype_hint,
+        "positive_terms": positive_terms,
+        "negative_terms": negative_terms,
         "technical_signals": [],
         "commercial_signals": [
             term for term in commercial_terms if term in msg
@@ -255,7 +285,7 @@ def build_openai_intent_context() -> str:
 
     No contiene secretos.
     No contiene catálogo completo.
-    No contiene reglas internas sensibles.
+    No reemplaza NIA OS.
     """
     return (
         "VIA Industrial vende equipos industriales, instrumentación, "
@@ -266,6 +296,11 @@ def build_openai_intent_context() -> str:
         '  "intent_candidate": "producto|codigo_producto|cotizacion|comparacion|asesor|postventa|documento|saludo|general",\n'
         '  "confidence": 0.0,\n'
         '  "normalized_query": "consulta corta para buscar en catálogo",\n'
+        '  "semantic_profile": "velocidad_aire|presion|temperatura|caudal|torque|null",\n'
+        '  "family_hint": "medicion|herramienta|sensor|motor|variador|plc|valvula|null",\n'
+        '  "subtype_hint": "subtipo técnico si aplica",\n'
+        '  "positive_terms": ["términos que sí debe tener el producto"],\n'
+        '  "negative_terms": ["términos que indican incompatibilidad"],\n'
         '  "technical_signals": ["señales técnicas detectadas"],\n'
         '  "commercial_signals": ["señales comerciales detectadas"],\n'
         '  "needs_catalog_search": true,\n'
@@ -279,7 +314,7 @@ def build_openai_intent_context() -> str:
         "- No inventes disponibilidad.\n"
         "- No inventes tiempos de entrega.\n"
         "- Si el cliente describe una aplicación, convierte eso en una query útil para catálogo.\n"
-        "- Si el cliente menciona velocidad de aire, ductos o ventilación, la query debe apuntar a anemómetro/medición de aire.\n"
+        "- Si el cliente menciona velocidad de aire, ductos o ventilación, usa semantic_profile=velocidad_aire.\n"
         "- Si falta información, sugiere máximo una pregunta.\n"
         "- No respondas al cliente; solo devuelve JSON."
     )
@@ -388,6 +423,11 @@ def interpret_open_customer_need(
         "intent_candidate": intent,
         "confidence": confidence,
         "normalized_query": normalized_query,
+        "semantic_profile": _safe_str(parsed.get("semantic_profile")),
+        "family_hint": _safe_str(parsed.get("family_hint")),
+        "subtype_hint": _safe_str(parsed.get("subtype_hint")),
+        "positive_terms": _clean_list(parsed.get("positive_terms")),
+        "negative_terms": _clean_list(parsed.get("negative_terms")),
         "technical_signals": _clean_list(parsed.get("technical_signals")),
         "commercial_signals": _clean_list(parsed.get("commercial_signals")),
         "needs_catalog_search": bool(parsed.get("needs_catalog_search")),
