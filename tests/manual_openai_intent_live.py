@@ -23,6 +23,15 @@ load_dotenv()
 os.environ["OPENAI_ENABLED"] = "true"
 os.environ.setdefault("OPENAI_MODEL", "gpt-4o-mini")
 
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    
+    
 from services.ai import openai_health  # noqa: E402
 from orchestration.openai_intent_interpreter import interpret_open_customer_need  # noqa: E402
 
