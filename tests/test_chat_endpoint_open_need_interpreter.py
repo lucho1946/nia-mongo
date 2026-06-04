@@ -2,27 +2,41 @@
 # tests/test_chat_endpoint_open_need_interpreter.py
 # ============================================================
 # OBJETIVO:
-# Validar que /chat pueda atender una necesidad abierta usando
-# el intérprete OpenAI/fallback, sin llamar OpenAI real.
+# Validar que /chat atiende de forma segura una necesidad abierta
+# cuando OpenAI está apagado.
 #
-# Caso:
-# "medir velocidad de aire en ductos"
-# → query segura: anemómetro medidor velocidad aire ductos ventilación
-# → búsqueda en catálogo real
-# → respuesta con productos reales
+# Arquitectura actual:
+# - OpenAI interpreta necesidades abiertas cuando está disponible.
+# - Si OpenAI está apagado, el fallback conservador NO debe adivinar.
+# - /chat debe pedir aclaración sin inventar productos.
+# - El catálogo real solo debe usarse cuando existe intención/query segura.
 # ============================================================
 
 import json
 import os
+import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi.testclient import TestClient
+
+
+# ============================================================
+# BOOTSTRAP DE IMPORTS
+# ============================================================
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 
 load_dotenv()
 
 # Forzamos OpenAI apagado para que el test no consuma tokens.
 os.environ["OPENAI_ENABLED"] = "false"
 os.environ.setdefault("OPENAI_MODEL", "gpt-4o-mini")
+
 
 from main import app  # noqa: E402
 
@@ -50,15 +64,14 @@ def assert_public_metadata_contract(payload: dict):
     """
     Valida el contrato público actualizado de /chat.
 
-    Por decisión de integración, /chat ahora SÍ expone:
+    /chat puede exponer:
     - decision_reason
     - nia_os
     - context
 
-    Pero NO debe exponer campos internos sueltos en la raíz.
+    Pero no debe exponer metadata interna suelta en raíz.
     """
 
-    # Estos campos ahora hacen parte del contrato público controlado.
     assert_condition(
         "decision_reason" in payload,
         "El contrato público debe incluir decision_reason.",
@@ -84,9 +97,6 @@ def assert_public_metadata_contract(payload: dict):
         "context debe ser dict o null.",
     )
 
-    # Estos campos NO deben salir como campos raíz.
-    # Si existen dentro de nia_os como runtime_policy/runtime_policy_check,
-    # está permitido porque van agrupados bajo metadata controlada.
     forbidden_root_fields = {
         "runtime_policy",
         "runtime_policy_check",
@@ -109,8 +119,8 @@ def assert_public_metadata_contract(payload: dict):
     )
 
 
-def run_case_open_need_air_speed():
-    print_section("CASO 1: necesidad abierta de velocidad de aire")
+def run_case_open_need_air_speed_with_openai_disabled():
+    print_section("CASO 1: necesidad abierta con OpenAI apagado usa fallback conservador")
 
     response = client.post(
         "/chat",
@@ -129,29 +139,36 @@ def run_case_open_need_air_speed():
     payload = response.json()
 
     show_json("OPEN NEED CHAT RESPONSE", payload)
-    
-    assert_condition(
-        payload.get("decision_reason") == "openai_interpreted_open_need",
-        "Debe marcar decision_reason=openai_interpreted_open_need.",
-    )
-
-    nia_os = payload.get("nia_os") or {}
-
-    assert_condition(
-        isinstance(nia_os, dict),
-        "nia_os debe venir como dict.",
-    )
-
-    assert_condition(
-        nia_os.get("intent") in ["consulta_producto_descripcion", "producto"],
-        "nia_os.intent debe reflejar consulta de producto por descripción.",
-    )
 
     assert_public_metadata_contract(payload)
 
+    # Con OpenAI apagado, NIA no debe fingir interpretación semántica abierta.
     assert_condition(
-        payload.get("respuesta"),
-        "Debe devolver respuesta pública.",
+    payload.get("decision_reason") in [
+        "missing_relevant_field",
+        "need_clarification",
+        "no_relevant_product_context",
+        "fallback_conservative_clarification",
+        "semantic_interpreter_requires_clarification",
+    ],
+    f"Con OpenAI apagado debe pedir aclaración, no marcar openai_interpreted_open_need. decision_reason={payload.get('decision_reason')}",
+    )
+
+    assert_condition(
+        payload.get("estado") in ["recopilando", "preguntando", "pendiente"],
+        f"Debe quedar en estado de recopilación/aclaración. estado={payload.get('estado')}",
+    )
+
+    respuesta = payload.get("respuesta", "")
+
+    assert_condition(
+        isinstance(respuesta, str) and respuesta.strip(),
+        "Debe devolver una respuesta pública.",
+    )
+
+    assert_condition(
+        "?" in respuesta or "¿" in respuesta,
+        "Debe hacer una pregunta de aclaración.",
     )
 
     productos = payload.get("productos", [])
@@ -162,17 +179,65 @@ def run_case_open_need_air_speed():
     )
 
     assert_condition(
-        len(productos) >= 1,
-        "Debe devolver al menos un producto desde catálogo real.",
+        len(productos) == 0,
+        "Con OpenAI apagado y necesidad abierta, no debe devolver productos inventados o inferidos.",
     )
 
-    serialized = json.dumps(payload, ensure_ascii=False).lower()
+    nia_os = payload.get("nia_os") or {}
 
     assert_condition(
-        "anem" in serialized or "aire" in serialized or "velocidad" in serialized,
-        "La respuesta debe estar relacionada con medición de aire/anemómetro.",
+        isinstance(nia_os, dict),
+        "nia_os debe venir como dict.",
     )
 
+    module_ids = nia_os.get("module_ids", [])
+
+    assert_condition(
+        isinstance(module_ids, list),
+        "nia_os.module_ids debe ser una lista.",
+    )
+
+    assert_condition(
+        "module_motor_interpretacion_semantica" in module_ids,
+        "NIA OS debe activar el módulo de interpretación semántica para default/open need.",
+    )
+
+    assert_condition(
+        "module_guardrails_no_inventar" in module_ids,
+        "NIA OS debe mantener guardrails activos.",
+    )
+
+    context = payload.get("context") or {}
+
+    assert_condition(
+        isinstance(context, dict),
+        "context debe ser dict.",
+    )
+
+    # Seguimos permitiendo que el mensaje quede como aplicación/contexto,
+    # pero eso NO significa que pueda recomendar producto sin interpretación semántica.
+    assert_condition(
+        context.get("codigo_producto") in [None, ""],
+        "No debe inventar código de producto.",
+    )
+
+    assert_condition(
+        context.get("referencia") in [None, ""],
+        "No debe inventar referencia.",
+    )
+
+
+# ============================================================
+# TEST PYTEST
+# ============================================================
+
+def test_open_need_with_openai_disabled_uses_conservative_clarification():
+    run_case_open_need_air_speed_with_openai_disabled()
+
+
+# ============================================================
+# EJECUCIÓN MANUAL
+# ============================================================
 
 def main():
     print("=" * 70)
@@ -184,7 +249,7 @@ def main():
     print("OPENAI_API_KEY:", bool(os.getenv("OPENAI_API_KEY")))
     print("MONGO CARGADO:", bool(os.getenv("MONGO_CONNECTION_STRING")))
 
-    run_case_open_need_air_speed()
+    run_case_open_need_air_speed_with_openai_disabled()
 
     print("\nFIN TEST CHAT ENDPOINT OPEN NEED INTERPRETER ✅")
 

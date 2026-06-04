@@ -12,6 +12,7 @@
   ],
   "consulta_producto_descripcion": [
     "module_motor_comercial",
+    "module_motor_interpretacion_semantica",
     "module_motor_tecnico_producto",
     "module_motor_api_productos",
     "module_guardrails_no_inventar",
@@ -37,12 +38,14 @@
   ],
   "pide_precio": [
     "module_motor_comercial",
+    "module_motor_interpretacion_semantica",
     "module_motor_tecnico_producto",
     "module_motor_api_productos",
     "module_motor_cotizacion_precio",
     "module_guardrails_no_inventar"
   ],
   "pide_ficha_tecnica": [
+    "module_motor_interpretacion_semantica",
     "module_motor_tecnico_producto",
     "module_motor_soporte_tecnico",
     "module_vision_archivos",
@@ -62,6 +65,7 @@
   ],
   "default": [
     "module_motor_comercial",
+    "module_motor_interpretacion_semantica",
     "module_guardrails_no_inventar",
     "module_memoria_contextual",
     "module_estado_negociacion"

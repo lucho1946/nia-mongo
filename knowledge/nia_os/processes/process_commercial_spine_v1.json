@@ -8,6 +8,7 @@
     "module_motor_comercial",
     "module_estado_negociacion",
     "module_memoria_contextual",
+    "module_motor_interpretacion_semantica",
     "module_motor_api_productos",
     "module_motor_tecnico_producto",
     "module_motor_cotizacion_precio",
@@ -19,12 +20,15 @@
   "golden_rules": [
     "Leer contexto antes de responder.",
     "Clasificar intención antes de decidir el siguiente paso.",
+    "Usar interpretación semántica solo como apoyo para entender intención y necesidad; nunca como fuente de producto, precio, stock o disponibilidad.",
     "No pedir datos que ya existan en memoria.",
     "Hacer máximo una pregunta estratégica por turno.",
     "No avanzar a cotización si la necesidad no está clara.",
     "Si el cliente quiere comprar, avanzar a proforma sin volver a vender desde cero.",
     "Si el cliente objeta o dice que no cumple, rediagnosticar antes de insistir.",
     "No inventar producto, precio, stock, flete, descuento, disponibilidad ni tiempo de entrega.",
+    "No usar familias manuales, marcas manuales ni líneas inventadas como criterio de búsqueda.",
+    "Toda búsqueda de producto debe resolverse contra catálogo real usando código, referencia, NIVEL_0 a NIVEL_4, descripción corta y descripción larga.",
     "Toda respuesta debe dejar un siguiente paso comercial claro."
   ],
   "master_flow": [
@@ -53,9 +57,10 @@
     {
       "step": 3,
       "state": "clasificar_intencion",
-      "description": "NIA identifica la intención principal del mensaje.",
+      "description": "NIA identifica la intención principal del mensaje. Si el mensaje es abierto o ambiguo, puede usar interpretación semántica controlada para generar intención candidata, normalized_query y señales, sin decidir producto.",
       "uses_modules": [
         "module_motor_comercial",
+        "module_motor_interpretacion_semantica",
         "module_estado_negociacion"
       ],
       "possible_intents": [
@@ -128,10 +133,15 @@
     {
       "step": 5,
       "state": "validar_necesidad_clara",
-      "description": "NIA decide si ya entiende suficientemente la necesidad para buscar o cotizar.",
+      "description": "NIA decide si ya entiende suficientemente la necesidad para buscar o cotizar usando el mensaje, memoria, interpretación semántica y señales técnicas/comerciales, sin inventar producto ni líneas de catálogo.",
+      "uses_modules": [
+        "module_motor_interpretacion_semantica",
+        "module_motor_tecnico_producto",
+        "module_memoria_contextual"
+      ],
       "minimum_checks": [
-        "producto_o_categoria",
-        "aplicacion_o_uso",
+        "normalized_query_o_codigo_o_referencia",
+        "aplicacion_o_uso_si_el_cliente_la_menciona",
         "especificacion_critica_si_aplica",
         "cantidad_si_cliente_pide_cotizacion"
       ],
@@ -161,17 +171,20 @@
     {
       "step": 7,
       "state": "buscar_validar_producto",
-      "description": "NIA busca en catálogo, API o memoria el producto real más adecuado.",
+      "description": "NIA busca en catálogo real usando código, referencia, NIVEL_0 a NIVEL_4, descripción corta y descripción larga. La interpretación semántica solo aporta normalized_query y señales; no decide producto final.",
       "uses_modules": [
+        "module_motor_interpretacion_semantica",
         "module_motor_tecnico_producto",
         "module_motor_api_productos",
         "module_guardrails_no_inventar"
       ],
       "actions": [
         "extract_product_signals",
-        "search_catalog",
+        "build_normalized_query",
+        "search_catalog_real_fields",
+        "rank_with_catalog_line_matcher",
         "validate_real_results",
-        "rank_relevant_options"
+        "reject_manual_family_or_manual_brand_ranking"
       ],
       "transitions": [
         {
@@ -386,7 +399,7 @@
       "next_state": "cliente_escribe"
     }
   ],
-  "minimal_memory_fields": {
+    "minimal_memory_fields": {
     "cliente": [
       "nombre",
       "empresa",
@@ -416,6 +429,20 @@
       "objecion_actual",
       "ultimo_paso",
       "siguiente_paso"
+    ],
+    "interpretacion_semantica": [
+      "intent_candidate",
+      "confidence",
+      "normalized_query",
+      "need_type",
+      "product_need_terms",
+      "technical_signals",
+      "commercial_signals",
+      "needs_catalog_search",
+      "should_ask",
+      "decision_reason",
+      "used_openai",
+      "fallback_used"
     ]
   },
   "response_policy": {
@@ -424,7 +451,11 @@
     "must_use_memory_before_asking": true,
     "must_include_next_step": true,
     "must_not_repeat_existing_data": true,
-    "must_not_invent_commercial_information": true
+    "must_not_invent_commercial_information": true,
+    "must_not_use_manual_families": true,
+    "must_not_use_manual_brand_lists": true,
+    "must_not_invent_catalog_lines": true,
+    "must_search_catalog_real_fields": true
   },
   "recommended_location": "knowledge/nia_os/processes/process_commercial_spine_v1.json"
 }

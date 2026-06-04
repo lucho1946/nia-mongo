@@ -2217,7 +2217,54 @@ def process_message(
             nia_os_context["document_policy"] = document_policy
 
             session["openai_intent_interpreter"] = openai_intent_interpretation
+    # --------------------------------------------------------
+    # 7.0 Guardrail runtime para interpretación semántica
+    # --------------------------------------------------------
+    # Si OpenAI/fallback ya determinó que NO hay una query segura
+    # para buscar en catálogo, NIA NO debe ejecutar búsqueda con
+    # el mensaje completo ni con aplicación/contexto parcial.
+    #
+    # Esto evita:
+    # - búsquedas costosas e innecesarias;
+    # - falsos positivos por coincidencias textuales;
+    # - recomendaciones indirectas cuando OpenAI está apagado;
+    # - romper la regla: catálogo solo se consulta con intención/query segura.
+    # --------------------------------------------------------
+    if (
+        openai_intent_interpretation
+        and openai_intent_interpretation.get("ok") is True
+        and openai_intent_interpretation.get("needs_catalog_search") is False
+        and openai_intent_interpretation.get("should_ask") is True
+    ):
+        response = openai_intent_interpretation.get(
+            "suggested_question",
+            "¿Qué producto industrial necesitas o qué aplicación quieres resolver?",
+        )
 
+        if not response:
+            response = "¿Qué producto industrial necesitas o qué aplicación quieres resolver?"
+
+        set_last_assistant_question(
+            session=session,
+            field="aplicacion",
+            question=response,
+        )
+
+        append_assistant_message(session, response)
+        save_session(session)
+
+        result = {
+            "intent": detected_intent,
+            "response": response,
+            "needs_clarification": True,
+            "context": context,
+            "session_id": session_id,
+            "decision_reason": "semantic_interpreter_requires_clarification",
+            "openai_intent_interpreter": openai_intent_interpretation,
+            "compatible_count": 0,
+        }
+
+        return _attach_nia_os_metadata(result, nia_os_context)
     # --------------------------------------------------------
     # 7.1 Búsqueda preliminar con contexto acumulado
     # --------------------------------------------------------

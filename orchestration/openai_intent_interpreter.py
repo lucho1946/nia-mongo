@@ -115,6 +115,25 @@ def _clean_list(value: Any) -> List[str]:
 
     return cleaned
 
+def _detect_exact_code(text: Any) -> str:
+    """
+    Detecta códigos exactos tipo VIA.
+
+    Este helper es permitido en fallback porque no interpreta semántica:
+    solo detecta identificadores explícitos escritos por el usuario.
+
+    Ejemplos válidos:
+    - 300203
+    - P382169
+    """
+    normalized = _safe_str(text).upper()
+
+    match = re.search(r"\b(P\d{5,}|\d{6,})\b", normalized)
+
+    if not match:
+        return ""
+
+    return match.group(1)
 
 def _safe_confidence(value: Any) -> float:
     """
@@ -156,122 +175,131 @@ def _valid_intent(value: Any) -> str:
 
 
 # ============================================================
-# FALLBACK DETERMINÍSTICO
+# FALLBACK CONSERVADOR 
 # ============================================================
 
 def fallback_interpret_open_need(message: str) -> Dict[str, Any]:
     """
-    Interpretación local sin OpenAI.
+    Fallback conservador sin OpenAI.
 
-    Se usa cuando:
-    - OpenAI está apagado.
-    - Falta configuración.
-    - El modelo falla.
-    - La respuesta del modelo no es JSON válido.
+    Responsabilidad:
+    - NO reemplaza a OpenAI.
+    - NO interpreta familias.
+    - NO interpreta marcas.
+    - NO inventa líneas de catálogo.
+    - NO genera términos técnicos inventados.
+    - Solo cubre casos seguros:
+      1. mensaje vacío/general;
+      2. código exacto;
+      3. necesidad abierta sin OpenAI -> pedir aclaración.
+
+    La interpretación semántica real debe hacerla OpenAI cuando esté disponible.
+    El catálogo real decide productos.
     """
     raw = _safe_str(message)
     msg = _normalize(raw)
 
-    product_terms = [
-        "sensor",
-        "valvula",
-        "válvula",
-        "motor",
-        "variador",
-        "plc",
-        "hmi",
-        "manometro",
-        "manómetro",
-        "anemometro",
-        "anemómetro",
-        "velocidad del aire",
-        "presion",
-        "presión",
-        "temperatura",
-        "caudal",
-        "nivel",
-        "ducto",
-        "ductos",
-        "ventilacion",
-        "ventilación",
-    ]
+    detected_code = _detect_exact_code(raw)
 
-    commercial_terms = [
-        "comprar",
-        "cotizar",
-        "cotizacion",
-        "cotización",
-        "precio",
-        "disponibilidad",
-        "stock",
-    ]
+    # --------------------------------------------------------
+    # Caso 1: mensaje vacío
+    # --------------------------------------------------------
+    if not msg:
+        return {
+            "ok": True,
+            "source": "conservative_fallback",
+            "version": AI_INTENT_INTERPRETER_VERSION,
+            "used_openai": False,
+            "intent_candidate": "general",
+            "confidence": 0.2,
+            "normalized_query": "",
+            "need_type": "general",
+            "detected_code": "",
+            "detected_reference": "",
+            "semantic_profile": "",
+            "family_hint": "",
+            "subtype_hint": "",
+            "catalog_line_hints": {},
+            "product_need_terms": [],
+            "description_short_terms": [],
+            "description_long_terms": [],
+            "positive_terms": [],
+            "negative_terms": [],
+            "technical_signals": [],
+            "commercial_signals": [],
+            "needs_catalog_search": False,
+            "should_ask": True,
+            "suggested_question": "¿Qué producto industrial necesitas o qué aplicación quieres resolver?",
+            "decision_reason": "Mensaje vacío o sin información suficiente.",
+            "reason": "empty_message_conservative_fallback",
+        }
 
-    has_product_signal = any(term in msg for term in product_terms)
-    has_commercial_signal = any(term in msg for term in commercial_terms)
+    # --------------------------------------------------------
+    # Caso 2: código exacto
+    # --------------------------------------------------------
+    if detected_code:
+        return {
+            "ok": True,
+            "source": "conservative_fallback",
+            "version": AI_INTENT_INTERPRETER_VERSION,
+            "used_openai": False,
+            "intent_candidate": "codigo_producto",
+            "confidence": 0.95,
+            "normalized_query": detected_code,
+            "need_type": "codigo_producto",
+            "detected_code": detected_code,
+            "detected_reference": "",
+            "semantic_profile": "",
+            "family_hint": "",
+            "subtype_hint": "",
+            "catalog_line_hints": {},
+            "product_need_terms": [detected_code],
+            "description_short_terms": [],
+            "description_long_terms": [],
+            "positive_terms": [],
+            "negative_terms": [],
+            "technical_signals": [],
+            "commercial_signals": [],
+            "needs_catalog_search": True,
+            "should_ask": False,
+            "suggested_question": "",
+            "decision_reason": "El usuario escribió un código exacto; NIA debe consultar catálogo real.",
+            "reason": "exact_code_detected_conservative_fallback",
+        }
 
-    if has_product_signal:
-        intent = "producto"
-    elif has_commercial_signal:
-        intent = "cotizacion"
-    else:
-        intent = "general"
-
-    normalized_query = raw
-
-    # Mejoramos algunos casos frecuentes sin usar IA.
-    semantic_profile = None
-    family_hint = None
-    subtype_hint = None
-    positive_terms: List[str] = []
-    negative_terms: List[str] = []
-
-    if "velocidad del aire" in msg or "ducto" in msg or "ductos" in msg or "ventilacion" in msg:
-        normalized_query = "anemómetro medidor velocidad aire ductos ventilación"
-        semantic_profile = "velocidad_aire"
-        family_hint = "medicion"
-        subtype_hint = "velocidad_aire"
-        positive_terms = [
-            "anemómetro",
-            "velocidad del aire",
-            "flujo de aire",
-            "ductos",
-            "ventilación",
-            "filtro de aire",
-        ]
-        negative_terms = [
-            "agua",
-            "acueducto",
-            "autos",
-            "radar",
-            "gasolina",
-            "metales",
-        ]
-
+    # --------------------------------------------------------
+    # Caso 3: necesidad abierta sin OpenAI
+    # --------------------------------------------------------
+    # No intentamos entender semántica con listas manuales.
+    # Pedimos una aclaración mínima para evitar búsquedas malas.
+    # --------------------------------------------------------
     return {
         "ok": True,
-        "source": "deterministic_fallback",
+        "source": "conservative_fallback",
         "version": AI_INTENT_INTERPRETER_VERSION,
         "used_openai": False,
-        "intent_candidate": intent,
-        "confidence": 0.55 if intent != "general" else 0.2,
-        "normalized_query": normalized_query,
-        "semantic_profile": semantic_profile,
-        "family_hint": family_hint,
-        "subtype_hint": subtype_hint,
-        "positive_terms": positive_terms,
-        "negative_terms": negative_terms,
+        "intent_candidate": "general",
+        "confidence": 0.35,
+        "normalized_query": "",
+        "need_type": "general",
+        "detected_code": "",
+        "detected_reference": "",
+        "semantic_profile": "",
+        "family_hint": "",
+        "subtype_hint": "",
+        "catalog_line_hints": {},
+        "product_need_terms": [],
+        "description_short_terms": [],
+        "description_long_terms": [],
+        "positive_terms": [],
+        "negative_terms": [],
         "technical_signals": [],
-        "commercial_signals": [
-            term for term in commercial_terms if term in msg
-        ],
-        "needs_catalog_search": intent in ["producto", "cotizacion"],
-        "should_ask": intent == "general",
-        "suggested_question": (
-            "¿Qué producto industrial necesitas o qué aplicación quieres resolver?"
-            if intent == "general"
-            else ""
-        ),
-        "reason": "fallback_without_openai",
+        "commercial_signals": [],
+        "needs_catalog_search": False,
+        "should_ask": True,
+        "suggested_question": "¿Qué producto industrial necesitas o qué aplicación quieres resolver?",
+        "decision_reason": "OpenAI no está disponible y el mensaje requiere interpretación semántica; se pide aclaración para evitar una búsqueda incorrecta.",
+        "reason": "open_need_requires_openai_or_clarification",
     }
 
 
@@ -286,37 +314,55 @@ def build_openai_intent_context() -> str:
     No contiene secretos.
     No contiene catálogo completo.
     No reemplaza NIA OS.
+    No permite inventar productos, líneas, marcas, precios ni stock.
     """
     return (
-        "VIA Industrial vende equipos industriales, instrumentación, "
-        "medición, automatización, sensores, válvulas, motores, variadores, "
-        "PLCs, HMIs, manómetros, transmisores, herramientas y equipos relacionados.\n\n"
-        "Debes devolver SOLO un JSON válido con esta estructura:\n"
+        "Eres el motor de interpretación semántica de NIA para VIA Industrial.\n"
+        "Tu tarea NO es responder al cliente y NO es recomendar productos.\n"
+        "Tu única tarea es interpretar intención, necesidad técnica y señales comerciales "
+        "para que NIA consulte el catálogo real.\n\n"
+
+        "Reglas críticas:\n"
+        "- No inventes productos.\n"
+        "- No inventes códigos.\n"
+        "- No inventes referencias.\n"
+        "- No inventes marcas.\n"
+        "- No inventes precios.\n"
+        "- No inventes stock.\n"
+        "- No inventes disponibilidad.\n"
+        "- No inventes tiempos de entrega.\n"
+        "- No inventes NIVEL_0, NIVEL_1, NIVEL_2, NIVEL_3 ni NIVEL_4.\n"
+        "- No uses familias manuales.\n"
+        "- No uses listas manuales de marcas.\n"
+        "- No devuelvas family_hint.\n"
+        "- No devuelvas catalog_line_hints.\n"
+        "- Si el cliente describe una aplicación, genera una normalized_query corta "
+        "derivada del mensaje del cliente.\n"
+        "- Si falta información mínima, marca should_ask=true y propone máximo una pregunta.\n"
+        "- Si hay intención suficiente para buscar, marca needs_catalog_search=true.\n"
+        "- El catálogo real decidirá productos usando CODIGO, REFERENCIA, MARCA_LET, "
+        "NIVEL_0 a NIVEL_4, DESCRIPCION_CORTA_PRE y DESCRIPCION_LARGA_PRE.\n\n"
+
+        "Devuelve SOLO un JSON válido con esta estructura:\n"
         "{\n"
         '  "intent_candidate": "producto|codigo_producto|cotizacion|comparacion|asesor|postventa|documento|saludo|general",\n'
         '  "confidence": 0.0,\n'
-        '  "normalized_query": "consulta corta para buscar en catálogo",\n'
-        '  "semantic_profile": "velocidad_aire|presion|temperatura|caudal|torque|null",\n'
-        '  "family_hint": "medicion|herramienta|sensor|motor|variador|plc|valvula|null",\n'
-        '  "subtype_hint": "subtipo técnico si aplica",\n'
-        '  "positive_terms": ["términos que sí debe tener el producto"],\n'
-        '  "negative_terms": ["términos que indican incompatibilidad"],\n'
-        '  "technical_signals": ["señales técnicas detectadas"],\n'
-        '  "commercial_signals": ["señales comerciales detectadas"],\n'
+        '  "normalized_query": "consulta corta derivada del mensaje para buscar en catálogo real",\n'
+        '  "need_type": "busqueda_producto|busqueda_por_aplicacion|precio|disponibilidad|compra|soporte|general",\n'
+        '  "detected_code": "",\n'
+        '  "detected_reference": "",\n'
+        '  "product_need_terms": ["términos principales derivados del mensaje del usuario"],\n'
+        '  "technical_signals": ["señales técnicas mencionadas o claramente implicadas"],\n'
+        '  "commercial_signals": ["precio|cotizar|comprar|stock|disponibilidad si aplica"],\n'
         '  "needs_catalog_search": true,\n'
         '  "should_ask": false,\n'
         '  "suggested_question": "máximo una pregunta si falta información",\n'
-        '  "reason": "explicación breve"\n'
+        '  "decision_reason": "explicación breve de la decisión"\n'
         "}\n\n"
-        "Reglas:\n"
-        "- No inventes productos.\n"
-        "- No inventes precios.\n"
-        "- No inventes disponibilidad.\n"
-        "- No inventes tiempos de entrega.\n"
-        "- Si el cliente describe una aplicación, convierte eso en una query útil para catálogo.\n"
-        "- Si el cliente menciona velocidad de aire, ductos o ventilación, usa semantic_profile=velocidad_aire.\n"
-        "- Si falta información, sugiere máximo una pregunta.\n"
-        "- No respondas al cliente; solo devuelve JSON."
+
+        "No incluyas campos adicionales como family_hint, familia, recommended_product, "
+        "price, stock, delivery_time, nivel_0_value, nivel_1_value, nivel_2_value, "
+        "nivel_3_value o nivel_4_value."
     )
 
 
@@ -415,6 +461,11 @@ def interpret_open_customer_need(
 
     normalized_query = _safe_str(parsed.get("normalized_query"), raw_message)
 
+    decision_reason = _safe_str(
+        parsed.get("decision_reason"),
+        _safe_str(parsed.get("reason"), "openai_semantic_interpretation"),
+    )
+
     result = {
         "ok": True,
         "source": "openai",
@@ -423,17 +474,34 @@ def interpret_open_customer_need(
         "intent_candidate": intent,
         "confidence": confidence,
         "normalized_query": normalized_query,
-        "semantic_profile": _safe_str(parsed.get("semantic_profile")),
-        "family_hint": _safe_str(parsed.get("family_hint")),
-        "subtype_hint": _safe_str(parsed.get("subtype_hint")),
-        "positive_terms": _clean_list(parsed.get("positive_terms")),
-        "negative_terms": _clean_list(parsed.get("negative_terms")),
+        "need_type": _safe_str(parsed.get("need_type"), "general"),
+        "detected_code": _safe_str(parsed.get("detected_code")),
+        "detected_reference": _safe_str(parsed.get("detected_reference")),
+
+        # Compatibilidad temporal:
+        # Estas claves quedan presentes para no romper consumidores antiguos,
+        # pero ya no se solicitan ni se usan para decisión.
+        "semantic_profile": "",
+        "family_hint": "",
+        "subtype_hint": "",
+        "catalog_line_hints": {},
+        "description_short_terms": [],
+        "description_long_terms": [],
+        "positive_terms": [],
+        "negative_terms": [],
+
+        # Nuevo contrato runtime.
+        "product_need_terms": _clean_list(parsed.get("product_need_terms")),
         "technical_signals": _clean_list(parsed.get("technical_signals")),
         "commercial_signals": _clean_list(parsed.get("commercial_signals")),
         "needs_catalog_search": bool(parsed.get("needs_catalog_search")),
         "should_ask": bool(parsed.get("should_ask")),
         "suggested_question": _safe_str(parsed.get("suggested_question")),
-        "reason": _safe_str(parsed.get("reason")),
+        "decision_reason": decision_reason,
+
+        # Alias legacy para no romper trazas anteriores.
+        "reason": decision_reason,
+
         "model": ai_result.get("model"),
         "response_id": ai_result.get("response_id"),
         "usage": ai_result.get("usage", {}),

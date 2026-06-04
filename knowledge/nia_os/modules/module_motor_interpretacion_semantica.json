@@ -1,0 +1,401 @@
+{
+  "module_id": "module_motor_interpretacion_semantica",
+  "module_name": "Motor de Interpretación Semántica",
+  "module_version": "1.0.0",
+  "status": "active",
+  "owner": "NIA OS",
+  "purpose": "Gobernar el uso de OpenAI como intérprete semántico auxiliar para entender intención, necesidad técnica y señales comerciales del cliente antes de consultar el catálogo real.",
+  "architectural_role": {
+    "openai_role": "semantic_interpreter_only",
+    "nia_role": "orchestrator_and_policy_executor",
+    "catalog_role": "source_of_truth",
+    "search_engine_role": "catalog_retrieval_and_ranking",
+    "guardrails_role": "final_response_validator"
+  },
+  "strategic_principle": "OpenAI interpreta el lenguaje del usuario, pero no decide productos, precios, stock, disponibilidad, tiempos de entrega, líneas reales del catálogo ni condiciones comerciales.",
+  "source_of_truth_policy": {
+    "catalog_is_source_of_truth": true,
+    "catalog_overrides_openai": true,
+    "openai_cannot_override_catalog": true,
+    "no_catalog_no_product_recommendation": true,
+    "product_recommendation_requires_catalog_result": true,
+    "price_stock_delivery_only_from_catalog_or_business_system": true,
+    "valid_search_fields": [
+      "CODIGO",
+      "REFERENCIA",
+      "REF_ALTERNATIVA",
+      "MARCA_LET",
+      "NIVEL_0",
+      "NIVEL_1",
+      "NIVEL_2",
+      "NIVEL_3",
+      "NIVEL_4",
+      "DESCRIPCION_CORTA_PRE",
+      "DESCRIPCION_LARGA_PRE",
+      "CARACTERISTICAS",
+      "APLICACIONES",
+      "texto_busqueda"
+    ],
+    "ranking_policy": {
+      "primary_ranking_source": "services.catalog_line_matcher",
+      "main_priority": [
+        "CODIGO",
+        "REFERENCIA",
+        "REF_ALTERNATIVA",
+        "NIVEL_4",
+        "NIVEL_3",
+        "NIVEL_2",
+        "NIVEL_1",
+        "NIVEL_0",
+        "DESCRIPCION_CORTA_PRE",
+        "DESCRIPCION_LARGA_PRE"
+      ],
+      "short_description_priority": "DESCRIPCION_CORTA_PRE has stronger identity weight than DESCRIPCION_LARGA_PRE",
+      "long_description_policy": "DESCRIPCION_LARGA_PRE can support relevance but must not dominate product identity"
+    }
+  },
+  "allowed_responsibilities": [
+    "detectar_intencion_del_usuario",
+    "detectar_si_el_usuario_saluda",
+    "detectar_si_el_usuario_pide_producto",
+    "detectar_si_el_usuario_quiere_cotizar",
+    "detectar_si_el_usuario_pide_precio",
+    "detectar_si_el_usuario_quiere_comprar",
+    "detectar_si_el_usuario_pide_asesor",
+    "detectar_si_el_usuario_envia_codigo_o_referencia",
+    "extraer_necesidad_en_lenguaje_natural",
+    "extraer_senales_tecnicas_mencionadas_por_el_usuario",
+    "extraer_senales_comerciales_mencionadas_por_el_usuario",
+    "generar_normalized_query_derivada_del_mensaje",
+    "indicar_si_se_debe_buscar_en_catalogo",
+    "indicar_si_hace_falta_una_pregunta_de_aclaracion",
+    "proponer_maximo_una_pregunta_de_aclaracion",
+    "explicar_brevemente_la_razon_de_la_decision"
+  ],
+  "forbidden_responsibilities": [
+    "recomendar_producto_final",
+    "seleccionar_producto_final",
+    "inventar_producto",
+    "inventar_codigo",
+    "inventar_referencia",
+    "inventar_marca",
+    "inventar_precio",
+    "inventar_stock",
+    "inventar_disponibilidad",
+    "inventar_tiempo_entrega",
+    "inventar_descuento",
+    "inventar_certificacion",
+    "inventar_garantia",
+    "inventar_condiciones_comerciales",
+    "confirmar_existencia_sin_catalogo",
+    "prometer_entrega",
+    "crear_cotizacion_final_sin_datos_reales",
+    "crear_oportunidad_comercial_por_si_solo",
+    "enviar_a_bitrix_por_si_solo",
+    "decidir_escalamiento_humano_por_si_solo",
+    "inventar_nivel_0",
+    "inventar_nivel_1",
+    "inventar_nivel_2",
+    "inventar_nivel_3",
+    "inventar_nivel_4",
+    "clasificar_producto_en_taxonomias_manuales",
+    "usar_taxonomias_manuales_como_criterio_de_busqueda",
+    "usar_familias_manuales_como_criterio_de_busqueda",
+    "usar_marcas_manuales_como_criterio_de_busqueda",
+    "inventar_o_asignar_lineas_de_catalogo"
+  ],
+  "input_contract": {
+    "required_fields": [
+      "user_message"
+    ],
+    "optional_fields": [
+      "session_id",
+      "channel",
+      "conversation_context",
+      "customer_context",
+      "active_product",
+      "last_products_shown",
+      "commercial_state"
+    ],
+    "rules": [
+      "El mensaje del usuario debe ser tratado como fuente primaria de intención.",
+      "El contexto de sesión puede ayudar, pero no puede reemplazar catálogo real.",
+      "No se debe enviar catálogo completo a OpenAI.",
+      "No se deben enviar secretos, credenciales ni datos sensibles innecesarios."
+    ]
+  },
+  "output_contract": {
+    "required_fields": [
+      "intent_candidate",
+      "confidence",
+      "normalized_query",
+      "need_type",
+      "product_need_terms",
+      "technical_signals",
+      "commercial_signals",
+      "needs_catalog_search",
+      "should_ask",
+      "suggested_question",
+      "decision_reason"
+    ],
+    "optional_fields": [
+      "detected_code",
+      "detected_reference",
+      "quantity",
+      "application_context",
+      "constraints",
+      "ambiguity_reason"
+    ],
+    "field_definitions": {
+      "intent_candidate": "Intención candidata. Valores sugeridos: saludo, producto, codigo_producto, cotizacion, comparacion, asesor, postventa, documento, general.",
+      "confidence": "Número entre 0.0 y 1.0 que indica confianza de interpretación.",
+      "normalized_query": "Consulta corta, limpia y derivada del mensaje del usuario para buscar en catálogo real.",
+      "need_type": "Tipo de necesidad detectada. Ejemplos: busqueda_producto, busqueda_por_aplicacion, precio, disponibilidad, compra, soporte, general.",
+      "product_need_terms": "Términos principales derivados del mensaje del usuario. No deben ser inventados ni ampliados con líneas falsas.",
+      "technical_signals": "Señales técnicas mencionadas o claramente implicadas por el usuario.",
+      "commercial_signals": "Señales comerciales mencionadas por el usuario: precio, cotizar, comprar, stock, disponibilidad.",
+      "needs_catalog_search": "true si NIA debe consultar catálogo real.",
+      "should_ask": "true si falta información mínima y conviene preguntar antes de buscar o avanzar.",
+      "suggested_question": "Máximo una pregunta de aclaración cuando sea necesaria.",
+      "decision_reason": "Explicación breve y trazable de la decisión."
+    },
+    "forbidden_output_fields": [
+      "family_hint",
+      "familia",
+      "expected_familia",
+      "brand_hint_from_manual_list",
+      "nivel_0_value",
+      "nivel_1_value",
+      "nivel_2_value",
+      "nivel_3_value",
+      "nivel_4_value",
+      "recommended_product",
+      "recommended_code",
+      "recommended_reference",
+      "price",
+      "stock",
+      "delivery_time"
+    ]
+  },
+  "openai_prompt_policy": {
+    "must_return_json": true,
+    "must_not_answer_customer_directly": true,
+    "must_not_recommend_products": true,
+    "must_not_include_prices": true,
+    "must_not_include_stock": true,
+    "must_not_include_delivery_time": true,
+    "must_not_invent_catalog_lines": true,
+    "must_not_invent_brands": true,
+    "must_not_use_manual_families": true,
+    "must_only_generate_search_terms_from_user_message": true,
+    "system_instruction": "Eres el motor de interpretación semántica de NIA. Tu función es entender intención, necesidad técnica y señales comerciales del cliente. No recomiendes productos finales, no inventes códigos, referencias, marcas, precios, stock, disponibilidad, tiempos de entrega ni líneas del catálogo. Devuelve solo JSON estructurado para que NIA consulte el catálogo real."
+  },
+  "decision_flow": [
+    {
+      "step": 1,
+      "name": "receive_user_message",
+      "description": "Recibir mensaje del usuario y contexto permitido."
+    },
+    {
+      "step": 2,
+      "name": "detect_obvious_cases",
+      "description": "Antes de OpenAI, NIA puede detectar saludos, mensajes vacíos o códigos exactos con reglas determinísticas."
+    },
+    {
+      "step": 3,
+      "name": "semantic_interpretation",
+      "description": "OpenAI interpreta intención, necesidad y señales, sin decidir producto."
+    },
+    {
+      "step": 4,
+      "name": "normalize_catalog_query",
+      "description": "Generar normalized_query derivada del mensaje del usuario."
+    },
+    {
+      "step": 5,
+      "name": "catalog_search_decision",
+      "description": "Determinar si se debe buscar en catálogo real o pedir una aclaración."
+    },
+    {
+      "step": 6,
+      "name": "real_catalog_search",
+      "description": "Buscar en catálogo usando CODIGO, REFERENCIA, NIVEL_0 a NIVEL_4, descripciones y campos reales."
+    },
+    {
+      "step": 7,
+      "name": "catalog_line_ranking",
+      "description": "Ordenar resultados con services.catalog_line_matcher."
+    },
+    {
+      "step": 8,
+      "name": "compatibility_validation",
+      "description": "Validar que los resultados no sean falsos positivos técnicos."
+    },
+    {
+      "step": 9,
+      "name": "guardrails_validation",
+      "description": "Validar que la respuesta final no invente información."
+    },
+    {
+      "step": 10,
+      "name": "final_response",
+      "description": "NIA responde con productos reales o pregunta de aclaración."
+    }
+  ],
+  "fallback_policy": {
+    "enabled": true,
+    "fallback_type": "conservative_deterministic_fallback",
+    "purpose": "Mantener operación segura cuando OpenAI no esté disponible.",
+    "rules": [
+      "El fallback no debe intentar reemplazar a OpenAI.",
+      "El fallback no debe crecer con diccionarios manuales extensos.",
+      "El fallback no debe inventar familias, marcas ni líneas de catálogo.",
+      "El fallback puede detectar mensajes vacíos, saludos claros y códigos exactos.",
+      "Si hay una frase útil, puede usar el mensaje limpio como normalized_query con confianza moderada.",
+      "Si el mensaje es genérico, debe pedir aclaración.",
+      "Si hay duda, es preferible preguntar antes que recomendar mal."
+    ],
+    "confidence_policy": {
+      "empty_or_generic_message": 0.2,
+      "literal_query_without_openai": 0.45,
+      "exact_code_detected": 0.95
+    }
+  },
+  "guardrails": {
+    "required": true,
+    "validate_final_response": true,
+    "prevent_hallucinations": true,
+    "prevent_invented_products": true,
+    "prevent_invented_codes": true,
+    "prevent_invented_references": true,
+    "prevent_invented_brands": true,
+    "prevent_invented_prices": true,
+    "prevent_invented_stock": true,
+    "prevent_invented_delivery_time": true,
+    "prevent_catalog_bypass": true,
+    "final_response_must_reference_validated_catalog_results": true
+  },
+  "integration_points": {
+    "reads_from": [
+      "conversation_memory",
+      "nia_os_runtime_policy",
+      "commercial_state"
+    ],
+    "writes_to": [
+      "semantic_interpretation",
+      "normalized_query",
+      "technical_signals",
+      "commercial_signals",
+      "decision_reason"
+    ],
+    "calls_next": [
+      "module_motor_api_productos",
+      "services.catalog_line_matcher",
+      "module_guardrails_no_inventar",
+      "response_engine"
+    ],
+    "must_not_call_directly": [
+      "final_product_recommendation",
+      "price_engine",
+      "stock_confirmation",
+      "delivery_promise",
+      "bitrix_create_opportunity"
+    ]
+  },
+  "observability": {
+    "log_required": true,
+    "log_fields": [
+      "session_id",
+      "intent_candidate",
+      "confidence",
+      "normalized_query",
+      "need_type",
+      "product_need_terms",
+      "technical_signals",
+      "commercial_signals",
+      "needs_catalog_search",
+      "should_ask",
+      "decision_reason",
+      "used_openai",
+      "fallback_used"
+    ]
+  },
+  "runtime_policy": {
+    "if_openai_returns_product_recommendation": "discard_recommendation_and_use_catalog_only",
+    "if_openai_returns_price_or_stock": "discard_price_stock_and_use_catalog_or_business_system_only",
+    "if_openai_returns_catalog_line_values": "treat_as_untrusted_text_terms_only",
+    "if_openai_confidence_is_low": "ask_one_clarifying_question_or_use_conservative_fallback",
+    "if_catalog_returns_no_results": "do_not_invent_alternatives_ask_clarifying_question_or_offer_human_help",
+    "if_results_are_ambiguous": "show_limited_real_options_and_ask_one_refinement_question"
+  },
+  "test_cases": [
+    {
+      "case_id": "SEM-001",
+      "input": "necesito medir velocidad de aire en ductos",
+      "expected": {
+        "intent_candidate": "producto",
+        "needs_catalog_search": true,
+        "must_not_return": [
+          "family_hint",
+          "familia",
+          "recommended_product",
+          "price",
+          "stock"
+        ]
+      }
+    },
+    {
+      "case_id": "SEM-002",
+      "input": "tienes el producto 300203",
+      "expected": {
+        "intent_candidate": "codigo_producto",
+        "needs_catalog_search": true,
+        "must_not_return": [
+          "price",
+          "stock",
+          "delivery_time"
+        ]
+      }
+    },
+    {
+      "case_id": "SEM-003",
+      "input": "hola necesito ayuda",
+      "expected": {
+        "intent_candidate": "general",
+        "should_ask": true,
+        "needs_catalog_search": false
+      }
+    },
+    {
+      "case_id": "SEM-004",
+      "input": "quiero cotizar un sensor inductivo 24v",
+      "expected": {
+        "intent_candidate": "cotizacion",
+        "needs_catalog_search": true,
+        "must_not_return": [
+          "recommended_product",
+          "price",
+          "stock"
+        ]
+      }
+    }
+  ],
+  "migration_notes": {
+    "replaces_previous_concepts": [
+      "family_hint",
+      "familia",
+      "manual_family_taxonomies",
+      "manual_brand_lists",
+      "hardcoded_catalog_lines"
+    ],
+    "new_core_concepts": [
+      "normalized_query",
+      "product_need_terms",
+      "technical_signals",
+      "commercial_signals",
+      "catalog_real_as_source_of_truth",
+      "catalog_line_matcher"
+    ],
+    "implementation_status": "policy_defined_pending_runtime_connection"
+  }
+}

@@ -24,11 +24,19 @@
     "descripcion": "Reglas ejecutables para consultar productos en API usando /producto/{codigo} y /buscar."
   },
   {
+    "file": "module_motor_interpretacion_semantica.json",
+    "module_id": "module_motor_interpretacion_semantica",
+    "nombre_visible": "Motor de Interpretación Semántica",
+    "version": "1.0.0",
+    "prioridad": 4,
+    "descripcion": "Gobierna el uso de OpenAI como intérprete semántico auxiliar: genera intención, normalized_query y señales del mensaje sin inventar productos, marcas, familias, líneas, precios, stock ni disponibilidad."
+  },
+  {
     "file": "module_vision_archivos.json",
     "module_id": "module_vision_archivos",
     "nombre_visible": "Motor de Visión e Ingesta de Archivos",
     "version": "1.0.0",
-    "prioridad": 4,
+    "prioridad": 5,
     "descripcion": "Analiza fotos, imágenes, pantallazos, PDFs, Excel, Word, CSV y ZIP enviados por clientes para extraer datos técnicos y convertirlos en acción comercial."
   },
   {
@@ -36,7 +44,7 @@
     "module_id": "module_motor_cotizacion_precio",
     "nombre_visible": "Motor de Cotización, Precio y Disponibilidad",
     "version": "2.0.0",
-    "prioridad": 5,
+    "prioridad": 6,
     "descripcion": "Controla cuándo se puede hablar de precio, tiempo de entrega, disponibilidad, flete y cotización oficial."
   },
   {
@@ -44,7 +52,7 @@
     "module_id": "module_motor_cierre_proforma",
     "nombre_visible": "Motor de Cierre y Proforma",
     "version": "2.0.0",
-    "prioridad": 6,
+    "prioridad": 7,
     "descripcion": "Activa cierre cuando el cliente muestra intención firme de compra."
   },
   {
@@ -52,7 +60,7 @@
     "module_id": "module_motor_soporte_tecnico",
     "nombre_visible": "Motor de Soporte Técnico Documental",
     "version": "2.0.0",
-    "prioridad": 7,
+    "prioridad": 8,
     "descripcion": "Usa fichas técnicas, manuales, catálogos y documentos para responder dudas técnicas."
   },
   {
@@ -68,7 +76,7 @@
     "module_id": "module_memoria_contextual",
     "nombre_visible": "Memoria Contextual",
     "version": "1.0.0",
-    "prioridad": 8,
+    "prioridad": 9,
     "descripcion": "Guarda contexto relevante de cliente, negociación, datos ya entregados, productos consultados y estado."
   },
   {
@@ -76,7 +84,7 @@
     "module_id": "module_estado_negociacion",
     "nombre_visible": "Estados de Negociación",
     "version": "1.0.0",
-    "prioridad": 9,
+    "prioridad": 10,
     "descripcion": "Modelo de estados del proceso comercial."
   },
   {
@@ -84,7 +92,7 @@
     "module_id": "module_observabilidad",
     "nombre_visible": "Observabilidad",
     "version": "1.0.0",
-    "prioridad": 10,
+    "prioridad": 11,
     "descripcion": "Registra trazas, eventos, intención detectada, módulos activados, errores, archivos y acciones API."
   },
   {
@@ -92,7 +100,7 @@
     "module_id": "module_hibrido_humano_ia",
     "nombre_visible": "Híbrido Humano + IA",
     "version": "1.0.0",
-    "prioridad": 11,
+    "prioridad": 12,
     "descripcion": "Define cuándo NIA debe escalar a un asesor humano."
   }
 ]
