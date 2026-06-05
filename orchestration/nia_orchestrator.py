@@ -41,7 +41,11 @@ import unicodedata
 from typing import Optional, List, Literal, Dict, Any
 from core.intent_router import detect_intent
 from core.response_engine import generate_response
+from services.technical_question_generator import generate_dynamic_technical_question
 
+from orchestration.technical_candidate_validator import (
+    filter_candidates_against_technical_requirements,
+)
 from retrieval.search_adapter import (
     search_products,
     search_exact_code,
@@ -352,6 +356,233 @@ def _build_payload_from_results(intent: str, results: List[dict]) -> Dict[str, A
     return {
         "results": results
     }
+
+def _rewrite_response_from_filtered_products(products: List[dict]) -> str:
+    """
+    Reconstruye una respuesta comercial limpia a partir de productos
+    ya filtrados técnicamente.
+
+    Se usa como último guardrail antes de responder al frontend.
+    No inventa datos: solo usa campos ya presentes en productos.
+    """
+    if not products:
+        return (
+            "Encontré opciones relacionadas, pero necesito validar una alternativa "
+            "más precisa antes de recomendarte un producto."
+        )
+
+    lines = ["Encontré estas opciones que se ajustan mejor a lo que necesitas:\n"]
+
+    for index, product in enumerate(products[:3], start=1):
+        name = (
+            product.get("nombre")
+            or product.get("NOMBRE_PRODUCTO")
+            or product.get("descripcion")
+            or "Producto relacionado"
+        )
+
+        brand = (
+            product.get("marca")
+            or product.get("MARCA_LET")
+            or ""
+        )
+
+        code = (
+            product.get("codigo")
+            or product.get("CODIGO")
+            or ""
+        )
+
+        price = product.get("precio") or ""
+        availability = product.get("disponibilidad") or ""
+
+        line = f"{index}. {name}"
+
+        if brand:
+            line += f" ({brand})"
+
+        if code:
+            line += f" - {code}"
+
+        if price:
+            line += f" - {price}"
+
+        if availability:
+            line += f" - {availability}"
+
+        lines.append(line)
+
+    lines.append(
+        "\nSi alguna de estas opciones te sirve, puedo ayudarte a avanzar con la validación o cotización."
+    )
+    return "\n".join(lines)
+
+def _get_catalog_line_key(product: Dict[str, Any]) -> str:
+    """
+    Obtiene una llave de línea de catálogo desde campos reales del producto.
+
+    No usa familias manuales.
+    No inventa categorías.
+    Solo usa la clasificación real del catálogo.
+    """
+    if not isinstance(product, dict):
+        return ""
+
+    for key in [
+        "nivel_2",
+        "NIVEL_2",
+        "nivel_1",
+        "NIVEL_1",
+        "nivel_3",
+        "NIVEL_3",
+        "nivel_4",
+        "NIVEL_4",
+    ]:
+        value = product.get(key)
+
+        if value not in [None, "", [], {}]:
+            return _normalize(value)
+
+    return ""
+
+
+def _filter_by_dominant_catalog_line(products: List[dict]) -> List[dict]:
+    """
+    Filtro final de coherencia de línea de catálogo.
+
+    Problema que corrige:
+    - Un producto puede cumplir numéricamente una especificación,
+      pero pertenecer a otra línea funcional.
+
+    Regla:
+    - Si hay al menos 2 productos de la misma línea de catálogo,
+      esa línea se considera dominante.
+    - Se excluyen productos de líneas diferentes.
+    - Si no hay línea dominante, no modifica nada.
+    """
+    if not isinstance(products, list) or len(products) < 3:
+        return products
+
+    line_counts: Dict[str, int] = {}
+
+    for product in products:
+        line_key = _get_catalog_line_key(product)
+
+        if not line_key:
+            continue
+
+        line_counts[line_key] = line_counts.get(line_key, 0) + 1
+
+    if not line_counts:
+        return products
+
+    dominant_line, dominant_count = max(
+        line_counts.items(),
+        key=lambda item: item[1],
+    )
+
+    # Solo aplicamos si hay evidencia fuerte de línea dominante.
+    if dominant_count < 2:
+        return products
+
+    filtered = [
+        product for product in products
+        if _get_catalog_line_key(product) == dominant_line
+    ]
+
+    return filtered if filtered else products
+
+
+def _apply_final_technical_filter_to_response(
+    final_response: Dict[str, Any],
+    context: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Último filtro antes de responder al frontend.
+
+    Corrige:
+    - Productos incompatibles por especificación numérica.
+    - Productos de otra línea funcional que pasan solo porque cumplen
+      una unidad numérica general.
+
+    No reemplaza búsqueda.
+    No inventa productos.
+    No llama OpenAI.
+    """
+    if not isinstance(final_response, dict):
+        return final_response
+
+    products_source = None
+    products = None
+
+    for key in ["products", "productos", "cards"]:
+        value = final_response.get(key)
+
+        if isinstance(value, list) and value:
+            products_source = key
+            products = value
+            break
+
+    if not isinstance(products, list) or not products:
+        return final_response
+
+    validation = filter_candidates_against_technical_requirements(
+        context=context,
+        candidates=products,
+        max_items=10,
+    )
+
+    filtered_products = validation.get("compatible_results", [])
+
+    # Si el cliente dio una especificación técnica numérica,
+    # primero nos quedamos con los productos que cumplen esa especificación.
+    should_apply_numeric_filter = (
+        validation.get("required_dimensions")
+        and filtered_products
+        and len(filtered_products) < len(products)
+    )
+
+    if should_apply_numeric_filter:
+        products_after_numeric_filter = filtered_products
+    else:
+        products_after_numeric_filter = products
+
+    # Segundo filtro: coherencia de línea de catálogo.
+    # Esto elimina productos que cumplen numéricamente, pero pertenecen
+    # a otra línea funcional cuando ya hay una línea dominante clara.
+    products_after_line_filter = _filter_by_dominant_catalog_line(
+        products_after_numeric_filter
+    )
+
+    should_apply_line_filter = (
+        len(products_after_line_filter) < len(products_after_numeric_filter)
+    )
+
+    if should_apply_numeric_filter or should_apply_line_filter:
+        final_products = products_after_line_filter
+
+        final_response["products"] = final_products
+        final_response["productos"] = final_products
+        final_response["cards"] = final_products
+
+        final_response["response"] = _rewrite_response_from_filtered_products(
+            final_products
+        )
+        final_response["respuesta"] = final_response["response"]
+
+        final_response["technical_candidate_validation_final"] = validation
+        final_response["final_filter_applied"] = True
+        final_response["final_filter_source"] = products_source
+        final_response["final_filter_original_count"] = len(products)
+        final_response["final_filter_after_numeric_count"] = len(
+            products_after_numeric_filter
+        )
+        final_response["final_filter_filtered_count"] = len(final_products)
+        final_response["final_filter_line_consistency_applied"] = (
+            should_apply_line_filter
+        )
+
+    return final_response
 
 
 def _safe_evaluate_document_policy(
@@ -1369,6 +1600,7 @@ def _build_search_query(message: str, context: Dict[str, Any]) -> str:
         "categoria",
         "marca",
         "subtipo",
+        "technical_clarification",
         "rango",
         "voltaje",
         "potencia",
@@ -1400,7 +1632,367 @@ def _build_search_query(message: str, context: Dict[str, Any]) -> str:
 
     return " ".join(parts).strip()
 
+def _build_interpreted_need_search_query(
+    message: str,
+    interpretation: Dict[str, Any],
+    context: Dict[str, Any],
+) -> str:
+    """
+    Construye una consulta enriquecida usando:
+    - interpretación semántica previa;
+    - respuesta técnica actual;
+    - contexto acumulado en memoria.
 
+    Se usa cuando el usuario responde una pregunta técnica dinámica.
+    No depende de productos, familias, marcas ni casos específicos.
+    """
+    if not isinstance(interpretation, dict):
+        interpretation = {}
+
+    if not isinstance(context, dict):
+        context = {}
+
+    parts: List[str] = []
+
+    for key in [
+        "normalized_query",
+        "required_action",
+        "required_target",
+        "application_context",
+    ]:
+        value = interpretation.get(key)
+
+        if value not in [None, "", [], {}]:
+            parts.append(str(value).strip())
+
+    for list_key in [
+        "product_need_terms",
+        "technical_signals",
+        "commercial_signals",
+    ]:
+        values = interpretation.get(list_key)
+
+        if isinstance(values, list):
+            for value in values:
+                if value not in [None, "", [], {}]:
+                    parts.append(str(value).strip())
+
+    for key in [
+        "technical_clarification",
+        "medida",
+        "rango",
+        "presion",
+        "temperatura",
+        "caudal",
+        "nivel",
+        "comunicacion",
+        "salida",
+        "conexion",
+        "diametro",
+        "material",
+        "aplicacion",
+    ]:
+        value = context.get(key)
+
+        if value not in [None, "", [], {}]:
+            parts.append(str(value).strip())
+
+    # Incluimos el mensaje actual solo si no quedó ya representado
+    # por technical_clarification/medida/contexto.
+    if message not in [None, "", [], {}]:
+        message_text = str(message).strip()
+
+        if message_text:
+            parts.append(message_text)
+
+    clean_parts: List[str] = []
+
+    for part in parts:
+        part = str(part or "").strip()
+
+        if not part:
+            continue
+
+        if part.lower() not in [p.lower() for p in clean_parts]:
+            clean_parts.append(part)
+
+    return " ".join(clean_parts).strip()
+
+def _safe_lower_text(value: Any) -> str:
+    """
+    Convierte cualquier valor a texto minúscula seguro.
+    No interpreta negocio; solo normaliza para comparación básica.
+    """
+    if value in [None, "", [], {}]:
+        return ""
+
+    try:
+        return str(value).lower().strip()
+    except Exception:
+        return ""
+
+
+def _collect_candidate_search_text(product: Dict[str, Any]) -> str:
+    """
+    Construye texto de evidencia desde campos reales del producto.
+
+    No usa familias manuales.
+    No usa marcas manuales.
+    No inventa datos.
+    Solo concatena campos reales del candidato.
+    """
+    if not isinstance(product, dict):
+        return ""
+
+    fields = [
+        "CODIGO",
+        "REFERENCIA",
+        "REF_ALTERNATIVA",
+        "NOMBRE_PRODUCTO",
+        "DESCRIPCION_CORTA_PRE",
+        "DESCRIPCION_LARGA_PRE",
+        "MARCA_LET",
+        "NIVEL_0",
+        "NIVEL_1",
+        "NIVEL_2",
+        "NIVEL_3",
+        "NIVEL_4",
+        "APLICACIONES",
+        "CARACTERISTICAS",
+        "texto_busqueda",
+    ]
+
+    parts = []
+
+    for field in fields:
+        value = product.get(field)
+
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value if item)
+        elif value:
+            parts.append(str(value))
+
+    return _safe_lower_text(" ".join(parts))
+
+
+def _openai_need_has_exact_identifier(
+    interpretation: Dict[str, Any],
+    context: Dict[str, Any],
+) -> bool:
+    """
+    Determina si el usuario dio una señal exacta para ir directo a catálogo.
+
+    Si hay código o referencia explícita, NIA puede recomendar sin preguntar
+    porque el cliente ya redujo la ambigüedad.
+    """
+    if not isinstance(interpretation, dict):
+        interpretation = {}
+
+    if not isinstance(context, dict):
+        context = {}
+
+    return bool(
+        interpretation.get("detected_code")
+        or interpretation.get("detected_reference")
+        or context.get("codigo_producto")
+        or context.get("referencia")
+    )
+
+
+def _term_has_evidence(term: str, product_text: str) -> bool:
+    """
+    Evalúa si un término tiene evidencia en el texto del producto.
+
+    Usa coincidencia directa y una raíz mínima para verbos/acciones.
+    Esto permite que:
+    - medir coincida con medidor / medición / medida;
+    - controlar coincida con controlador / control;
+    - detectar coincida con detector / detección.
+
+    No es una lista técnica ni una regla por producto.
+    """
+    clean_term = _safe_lower_text(term)
+    clean_text = _safe_lower_text(product_text)
+
+    if not clean_term or not clean_text:
+        return False
+
+    if clean_term in clean_text:
+        return True
+
+    # Raíz mínima genérica para palabras largas.
+    # Evita depender de listas por producto.
+    if len(clean_term) >= 5:
+        root = clean_term[:5]
+        if root and root in clean_text:
+            return True
+
+    if len(clean_term) >= 4:
+        root = clean_term[:4]
+        if root and root in clean_text:
+            return True
+
+    return False
+
+
+def _split_meaningful_terms(text: str) -> List[str]:
+    """
+    Divide texto en términos útiles sin usar listas técnicas.
+
+    Elimina solo conectores muy básicos para evitar que palabras como
+    'de', 'del', 'para' cuenten como evidencia.
+    """
+    raw = _safe_lower_text(text)
+
+    if not raw:
+        return []
+
+    separators = [
+        ",", ".", ";", ":", "/", "\\", "|", "-", "_", "(", ")", "[", "]",
+        "¿", "?", "¡", "!",
+    ]
+
+    for separator in separators:
+        raw = raw.replace(separator, " ")
+
+    grammar_words = {
+        "de", "del", "la", "las", "el", "los", "en", "para", "por",
+        "con", "sin", "un", "una", "unos", "unas", "y", "o", "a",
+    }
+
+    terms = []
+
+    for token in raw.split():
+        token = token.strip()
+
+        if len(token) < 4:
+            continue
+
+        if token in grammar_words:
+            continue
+
+        if token not in terms:
+            terms.append(token)
+
+    return terms
+
+
+def _top_candidate_has_functional_evidence(
+    interpretation: Dict[str, Any],
+    product: Dict[str, Any],
+) -> bool:
+    """
+    Verifica si el candidato top evidencia la necesidad funcional
+    interpretada por OpenAI.
+
+    No decide compatibilidad final.
+    Solo decide si hay suficiente evidencia para NO preguntar.
+
+    Regla:
+    - Si hay required_action, debe existir evidencia de esa acción.
+    - Si hay required_target, debe existir al menos una evidencia del objetivo.
+    """
+    if not isinstance(interpretation, dict) or not isinstance(product, dict):
+        return False
+
+    product_text = _collect_candidate_search_text(product)
+
+    if not product_text:
+        return False
+
+    required_action = _safe_lower_text(interpretation.get("required_action"))
+    required_target = _safe_lower_text(interpretation.get("required_target"))
+
+    # Si OpenAI no entregó acción ni objetivo, no bloqueamos aquí.
+    # Otros módulos decidirán si pregunta.
+    if not required_action and not required_target:
+        return True
+
+    action_ok = True
+
+    if required_action:
+        action_ok = _term_has_evidence(required_action, product_text)
+
+    target_terms = _split_meaningful_terms(required_target)
+    target_ok = True
+
+    if target_terms:
+        target_ok = any(
+            _term_has_evidence(term, product_text)
+            for term in target_terms
+        )
+
+    return bool(action_ok and target_ok)
+
+def _should_ask_technical_question_for_open_need(
+    interpretation: Dict[str, Any],
+    context: Dict[str, Any],
+    compatible_results: List[dict],
+    questions_asked: int,
+) -> Dict[str, Any]:
+    """
+    Compuerta de aclaración técnica para necesidades abiertas interpretadas.
+
+    Responsabilidad:
+    - Decide si NIA debe preguntar antes de recomendar.
+    - NO genera la pregunta.
+    - NO recomienda productos.
+    - NO usa preguntas hardcodeadas.
+    - NO usa familias manuales.
+
+    La pregunta real se genera después con:
+    services.technical_question_generator.generate_dynamic_technical_question()
+    """
+    if not isinstance(interpretation, dict):
+        return {
+            "should_ask": False,
+            "reason": "no_openai_interpretation",
+        }
+
+    if interpretation.get("needs_catalog_search") is not True:
+        return {
+            "should_ask": False,
+            "reason": "openai_did_not_request_catalog_search",
+        }
+
+    if _openai_need_has_exact_identifier(interpretation, context):
+        return {
+            "should_ask": False,
+            "reason": "exact_identifier_present",
+        }
+
+    # Regla de máximo 3 preguntas técnicas.
+    # Si ya se agotaron, no preguntamos más aquí.
+    if questions_asked >= 3:
+        return {
+            "should_ask": False,
+            "reason": "max_technical_questions_reached",
+        }
+
+    if not compatible_results:
+        return {
+            "should_ask": True,
+            "reason": "open_need_without_compatible_results",
+        }
+
+    top_product = compatible_results[0]
+
+    has_evidence = _top_candidate_has_functional_evidence(
+        interpretation=interpretation,
+        product=top_product,
+    )
+
+    if has_evidence:
+        return {
+            "should_ask": False,
+            "reason": "top_candidate_has_functional_evidence",
+        }
+
+    return {
+        "should_ask": True,
+        "reason": "open_need_top_candidate_lacks_functional_evidence",
+    }
+    
 # ============================================================
 # POLÍTICA DE DECISIÓN
 # ============================================================
@@ -1763,6 +2355,21 @@ def process_message(
     # --------------------------------------------------------
     # 3. Actualizar memoria
     # --------------------------------------------------------
+    # Guardamos el slot pendiente ANTES de actualizar memoria.
+    # process_memory_update puede limpiar el slot si el usuario respondió.
+    pending_slot_before_memory = (
+        session.get("last_assistant_question_field")
+        or session.get("slot_pendiente")
+    )
+
+    # Guardamos la interpretación semántica anterior.
+    # Esto permite continuidad cuando el usuario responde una pregunta técnica
+    # con frases cortas como: "100 metros", "0 a 10 bar", "RS485", etc.
+    previous_openai_intent_interpretation = session.get("openai_intent_interpreter")
+
+    if not isinstance(previous_openai_intent_interpretation, dict):
+        previous_openai_intent_interpretation = None
+
     session = process_memory_update(
         session=session,
         user_message=message,
@@ -1770,7 +2377,12 @@ def process_message(
     )
 
     context = session.get("context", {})
-    
+
+    answered_technical_clarification = (
+        _normalize(pending_slot_before_memory) == "technical_clarification"
+        and context.get("technical_clarification") not in [None, "", [], {}]
+    )
+
     # Interpretación auxiliar con OpenAI/fallback.
     # Solo se usa para necesidades abiertas; no reemplaza el intent_router.
     openai_intent_interpretation: Optional[Dict[str, Any]] = None
@@ -1867,15 +2479,6 @@ def process_message(
     # 3.2.2 Proforma / cierre comercial
     # --------------------------------------------------------
     # Si el cliente ya tiene una cotización o seguimiento comercial
-    # y luego dice:
-    # - "quiero comprar"
-    # - "apruebo la cotización"
-    # - "sigamos"
-    # - "procedamos"
-    # - "quiero pagar"
-    # - "hagamos la proforma"
-    # - "envíame la proforma"
-    #
     # NIA debe avanzar a proforma sin volver a vender desde cero
     # y debe pedir RUT, NIT o documento fiscal.
     #
@@ -2189,6 +2792,40 @@ def process_message(
     # - No inventa producto, precio ni stock.
     # --------------------------------------------------------
     if (
+        answered_technical_clarification
+        and previous_openai_intent_interpretation
+        and not context.get("codigo_producto")
+        and not context.get("referencia")
+    ):
+        # ----------------------------------------------------
+        # Continuidad técnica:
+        # El usuario está respondiendo una pregunta técnica dinámica.
+        #
+        # NO reinterpretamos el mensaje corto como una necesidad nueva.
+        # Reusamos la interpretación anterior y la enriquecemos con memoria.
+        # ----------------------------------------------------
+        openai_intent_interpretation = {
+            **previous_openai_intent_interpretation,
+            "needs_catalog_search": True,
+            "should_ask": False,
+            "technical_clarification": context.get("technical_clarification"),
+            "memory_enriched": True,
+            "memory_enriched_reason": "answered_technical_clarification",
+        }
+
+        detected_intent = "producto"
+        intent_data = {
+            **intent_data,
+            "intent": "producto",
+            "openai_intent_interpreter": openai_intent_interpretation,
+        }
+
+        nia_os_context = build_nia_os_context(detected_intent)
+        nia_os_context["document_policy"] = document_policy
+
+        session["openai_intent_interpreter"] = openai_intent_interpretation
+
+    elif (
         detected_intent in ["general", "producto"]
         and not context.get("codigo_producto")
         and not context.get("referencia")
@@ -2273,7 +2910,11 @@ def process_message(
         and openai_intent_interpretation.get("normalized_query")
         and openai_intent_interpretation.get("needs_catalog_search") is True
     ):
-        search_query = str(openai_intent_interpretation.get("normalized_query")).strip()
+        search_query = _build_interpreted_need_search_query(
+            message=message,
+            interpretation=openai_intent_interpretation,
+            context=context,
+        )
     else:
         search_query = _build_search_query(
             message=message,
@@ -2320,6 +2961,31 @@ def process_message(
             max_items=10,
         )
 
+    # --------------------------------------------------------
+    # Validación técnica de candidatos contra especificaciones
+    # explícitas del cliente.
+    #
+    # Importante:
+    # - compatible_results puede quedar vacío después del filtro semántico.
+    # - Si queda vacío, usamos preliminary_results solo como evidencia
+    #   para detectar alternativas relacionadas o conflictos técnicos.
+    # - No reintroducimos productos descartados como recomendables si
+    #   no tienen evidencia técnica suficiente.
+    # --------------------------------------------------------
+    validation_candidate_pool = (
+        compatible_results
+        if compatible_results
+        else preliminary_results[:10]
+    )
+
+    technical_candidate_validation = filter_candidates_against_technical_requirements(
+        context=context,
+        candidates=validation_candidate_pool,
+        max_items=10,
+    )
+
+    compatible_results = technical_candidate_validation.get("compatible_results", [])
+
     catalog_knowledge = _build_catalog_knowledge_from_results(
         preliminary_results,
         context=context,
@@ -2337,32 +3003,202 @@ def process_message(
     if (
         openai_intent_interpretation
         and openai_intent_interpretation.get("needs_catalog_search") is True
-        and compatible_results
     ):
-        save_last_results(session, compatible_results)
-        reset_technical_questions(session)
-        clear_last_assistant_question(session)
-
-        payload = _build_payload_from_results("producto", compatible_results)
-
-        final_response = generate_response(
-            intent_data={
-                **intent_data,
-                "intent": "producto",
-            },
-            search_payload=payload,
+        open_need_gate = _should_ask_technical_question_for_open_need(
+            interpretation=openai_intent_interpretation,
+            context=context,
+            compatible_results=compatible_results,
+            questions_asked=technical_questions_asked,
         )
+        
+        if (
+            technical_candidate_validation.get("blocked_count", 0) > 0
+            and not compatible_results
+        ):
+            # ------------------------------------------------
+            # Alternativa técnica relacionada
+            # ------------------------------------------------
+            # El sistema encontró candidatos relacionados, pero
+            # alguno contradice una especificación técnica explícita.
+            #
+            # Nueva decisión comercial:
+            # - No decir "no encontré".
+            # - No venderlo como producto exacto.
+            # - Ofrecerlo como alternativa relacionada.
+            # - Preguntar si le sirve.
+            # - Si el cliente dice que no, luego se escala a asesor.
+            # ------------------------------------------------
+            blocked_results = technical_candidate_validation.get("blocked_results", [])
 
-        append_assistant_message(session, final_response.get("response", ""))
-        save_session(session)
+            alternative_product = (
+                blocked_results[0]
+                if isinstance(blocked_results, list) and blocked_results
+                else None
+            )
 
-        final_response["session_id"] = session_id
-        final_response["context"] = context
-        final_response["decision_reason"] = "openai_interpreted_open_need"
-        final_response["compatible_count"] = len(compatible_results)
-        final_response["openai_intent_interpreter"] = openai_intent_interpretation
+            if isinstance(alternative_product, dict):
+                alt_code = (
+                    alternative_product.get("CODIGO")
+                    or alternative_product.get("codigo")
+                    or ""
+                )
+                alt_name = (
+                    alternative_product.get("NOMBRE_PRODUCTO")
+                    or alternative_product.get("nombre")
+                    or alternative_product.get("DESCRIPCION_CORTA_PRE")
+                    or "una alternativa relacionada"
+                )
+                alt_brand = (
+                    alternative_product.get("MARCA_LET")
+                    or alternative_product.get("marca")
+                    or ""
+                )
 
-        return _attach_nia_os_metadata(final_response, nia_os_context)
+                response = (
+                    f"Encontré una alternativa relacionada: {alt_name}"
+                )
+
+                if alt_brand:
+                    response += f" | Marca: {alt_brand}"
+
+                if alt_code:
+                    response += f" | Código: {alt_code}"
+
+                response += (
+                    "\n\nEsta opción parece relacionada con tu necesidad, "
+                    "pero puede no cubrir exactamente la especificación que indicaste. "
+                    "¿Te sirve como alternativa o prefieres que lo escale "
+                    "a un asesor para validar una opción exacta?"
+                )
+
+                # Guardamos la alternativa para continuidad comercial.
+                save_last_results(session, [alternative_product])
+
+                # La siguiente respuesta del cliente será una decisión:
+                # acepta alternativa o pide exacto/escalamiento.
+                set_last_assistant_question(
+                    session=session,
+                    field="technical_clarification",
+                    question=response,
+                )
+
+                increment_technical_questions(session)
+                append_assistant_message(session, response)
+                save_session(session)
+
+                result = {
+                    "intent": detected_intent,
+                    "response": response,
+                    "needs_clarification": True,
+                    "context": context,
+                    "session_id": session_id,
+                    "decision_reason": "technical_candidate_alternative_offered",
+                    "openai_intent_interpreter": openai_intent_interpretation,
+                    "open_need_gate": open_need_gate,
+                    "technical_candidate_validation": technical_candidate_validation,
+                    "compatible_count": len(compatible_results),
+                    "alternative_product": alternative_product,
+                    "products": [alternative_product],
+                }
+
+                return _attach_nia_os_metadata(result, nia_os_context)
+
+        if open_need_gate.get("should_ask") is True:
+            question_result = generate_dynamic_technical_question(
+                user_message=message,
+                openai_interpretation=openai_intent_interpretation,
+                top_catalog_candidates=compatible_results[:3],
+                questions_asked=technical_questions_asked,
+                previous_questions=[
+                    session.get("last_assistant_question_text")
+                ] if session.get("last_assistant_question_text") else [],
+            )
+
+            response = question_result.get("question") or (
+                "¿Qué especificación técnica principal debe cumplir el producto?"
+            )
+
+            set_last_assistant_question(
+                session=session,
+                field="technical_clarification",
+                question=response,
+            )
+
+            increment_technical_questions(session)
+            append_assistant_message(session, response)
+            save_session(session)
+
+            result = {
+                "intent": detected_intent,
+                "response": response,
+                "needs_clarification": True,
+                "context": context,
+                "session_id": session_id,
+                "decision_reason": open_need_gate.get("reason"),
+                "openai_intent_interpreter": openai_intent_interpretation,
+                "open_need_gate": open_need_gate,
+                "technical_question_generator": question_result,
+                "compatible_count": len(compatible_results),
+            }
+
+            return _attach_nia_os_metadata(result, nia_os_context)
+
+        if compatible_results:
+            save_last_results(session, compatible_results)
+            reset_technical_questions(session)
+            clear_last_assistant_question(session)
+
+            payload = _build_payload_from_results("producto", compatible_results)
+
+            final_response = generate_response(
+                intent_data={
+                    **intent_data,
+                    "intent": "producto",
+                },
+                search_payload=payload,
+            )
+
+            # ----------------------------------------------------
+            # Filtro final antes de responder al frontend.
+            #
+            # Aquí estamos en la rama real de:
+            # decision_reason = openai_interpreted_open_need
+            #
+            # Este filtro evita que response_engine/cards/router
+            # devuelvan productos incompatibles cuando el cliente
+            # ya dio una especificación técnica numérica.
+            # ----------------------------------------------------
+            final_response = _apply_final_technical_filter_to_response(
+                final_response=final_response,
+                context=context,
+            )
+
+            filtered_final_products = (
+                final_response.get("products")
+                or final_response.get("productos")
+                or final_response.get("cards")
+                or compatible_results
+            )
+
+            if isinstance(filtered_final_products, list):
+                save_last_results(session, filtered_final_products)
+
+            append_assistant_message(session, final_response.get("response", ""))
+            save_session(session)
+
+            final_response["session_id"] = session_id
+            final_response["context"] = context
+            final_response["decision_reason"] = "openai_interpreted_open_need"
+            final_response["compatible_count"] = len(
+                filtered_final_products
+                if isinstance(filtered_final_products, list)
+                else compatible_results
+            )
+            final_response["openai_intent_interpreter"] = openai_intent_interpretation
+            final_response["open_need_gate"] = open_need_gate
+            final_response["technical_candidate_validation"] = technical_candidate_validation
+
+            return _attach_nia_os_metadata(final_response, nia_os_context)
     
     # --------------------------------------------------------
     # 7.4 Regla fuerte para torquímetros

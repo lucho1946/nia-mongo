@@ -8,7 +8,6 @@
 # - Mantener contexto conversacional por sesión.
 # - Evitar que el cliente repita información.
 # - Acumular datos técnicos útiles antes de buscar.
-# - Limpiar contexto cuando el usuario cambia de producto/familia.
 # - Detectar códigos exactos aunque vengan dentro de frases.
 # - Recordar último producto seleccionado para continuidad comercial.
 # - Guardar la última pregunta activa de NIA.
@@ -16,15 +15,18 @@
 # - Interpretar respuestas cortas según la pregunta anterior.
 # - No inventar datos: solo guarda señales claras del usuario.
 #
+# Reglas nuevas:
+# - Este módulo NO clasifica por familias manuales.
+# - Este módulo NO usa marcas hardcodeadas.
+# - Este módulo NO asigna subtipos por listas manuales.
+# - OpenAI + NIA OS + catálogo real se encargan de interpretación semántica.
+# - La memoria solo guarda datos explícitos del usuario.
+#
 # NOTA PRODUCTIVA:
-# Hoy este módulo mantiene memoria en RAM para desarrollo local.
-# La versión siguiente debe persistir esta estructura en MongoDB
-# con TTL máximo de 8 días:
+# En local puede funcionar con RAM.
+# En Azure debe persistir en MongoDB con TTL de 8 días.
 #
 # 8 días = 8 * 24 * 60 * 60 = 691200 segundos
-#
-# Índice esperado en MongoDB:
-# db.sessions.createIndex({ "updated_at": 1 }, { expireAfterSeconds: 691200 })
 # ============================================================
 
 from __future__ import annotations
@@ -63,8 +65,13 @@ SESSION_TTL_SECONDS = 691200  # 8 días
 # CAMPOS TÉCNICOS / COMERCIALES PERMITIDOS EN CONTEXTO
 # ============================================================
 # update_context() solo guarda claves presentes en esta lista.
-# Por eso aquí deben existir tanto campos técnicos como banderas
-# conversacionales útiles.
+#
+# Nota:
+# Conservamos campos legacy como familia/categoria/subtipo por contrato
+# con frontend, response engine o consumidores antiguos, pero este módulo
+# ya NO los llena mediante listas manuales.
+# ============================================================
+
 COMMERCIAL_DATA_KEYS = [
     "nombre_cliente",
     "empresa",
@@ -76,12 +83,23 @@ COMMERCIAL_DATA_KEYS = [
 ]
 
 TECHNICAL_CONTEXT_KEYS = [
+    # --------------------------------------------------------
+    # Legacy / compatibilidad
+    # --------------------------------------------------------
     "familia",
     "categoria",
     "subtipo",
+
+    # --------------------------------------------------------
+    # Identificadores exactos
+    # --------------------------------------------------------
     "codigo_producto",
     "referencia",
     "marca",
+
+    # --------------------------------------------------------
+    # Datos técnicos objetivos
+    # --------------------------------------------------------
     "rango",
     "voltaje",
     "potencia",
@@ -105,6 +123,7 @@ TECHNICAL_CONTEXT_KEYS = [
     "comunicacion",
     "fase",
     "tipo_accion",
+    "technical_clarification",
     "fluido",
     "autonomia",
     "conectividad",
@@ -137,19 +156,33 @@ def _now_iso() -> str:
 def _normalize(text: Any) -> str:
     """
     Normaliza texto:
-    - minúsculas
-    - sin acentos
-    - espacios limpios
+    - minúsculas;
+    - sin acentos;
+    - espacios limpios.
     """
     text = "" if text is None else str(text)
     text = text.lower().strip()
 
     text = "".join(
-        c for c in unicodedata.normalize("NFKD", text)
-        if not unicodedata.combining(c)
+        char
+        for char in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(char)
     )
 
-    return re.sub(r"\s+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _safe_text(value: Any) -> str:
+    """
+    Convierte cualquier valor a texto seguro.
+    """
+    if value in [None, "", [], {}]:
+        return ""
+
+    try:
+        return str(value).strip()
+    except Exception:
+        return ""
 
 
 def _is_empty(value: Any) -> bool:
@@ -157,6 +190,22 @@ def _is_empty(value: Any) -> bool:
     Determina si un valor no aporta contexto.
     """
     return value in [None, "", [], {}]
+
+
+def _store_original_if_match(
+    context: Dict[str, Any],
+    key: str,
+    pattern: str,
+    normalized_message: str,
+    original_message: str,
+    *,
+    flags: int = 0,
+) -> None:
+    """
+    Guarda el mensaje original en un campo si hay match.
+    """
+    if re.search(pattern, normalized_message, flags=flags):
+        context[key] = original_message.strip()
 
 
 def extract_exact_product_code(message: str) -> Optional[str]:
@@ -190,7 +239,6 @@ def extract_exact_product_code(message: str) -> Optional[str]:
         return match_p.group(1).upper()
 
     # Código numérico largo.
-    # Ejemplo: 300203.
     # Mínimo 6 dígitos para evitar confundir valores técnicos.
     match_num = re.search(r"\b([0-9]{6,})\b", raw)
 
@@ -232,26 +280,10 @@ def _build_empty_session() -> Dict[str, Any]:
         "last_selected_product_code": None,
         "estado_negociacion": None,
 
-        # ----------------------------------------------------
         # Datos comerciales estructurados
-        # ----------------------------------------------------
-        # Se usan para cotización, proforma y seguimiento.
-        # No reemplazan el contexto técnico.
-        # Se guardan en MongoDB con la sesión.
-        # ----------------------------------------------------
         "commercial_data": {key: None for key in COMMERCIAL_DATA_KEYS},
 
-        # ----------------------------------------------------
         # Última pregunta activa / slot pendiente
-        # ----------------------------------------------------
-        # Esto permite que NIA entienda respuestas cortas.
-        #
-        # Ejemplo:
-        # NIA: ¿Qué tipo específico necesitas?
-        # last_assistant_question_field = "subtipo"
-        # Usuario: sensor fotoeléctrico
-        # NIA debe guardar subtipo = fotoelectrico
-        # ----------------------------------------------------
         "last_assistant_question_field": None,
         "last_assistant_question_text": None,
         "last_assistant_question_at": None,
@@ -279,11 +311,8 @@ def create_session() -> Dict[str, Any]:
     """
     session = _build_empty_session()
 
-    # Fallback local en RAM.
     _SESSIONS[session["session_id"]] = deepcopy(session)
 
-    # Persistencia productiva.
-    # Si falla, mongo_session_store retorna False y no rompe NIA.
     save_session_to_mongo(session)
 
     return deepcopy(session)
@@ -296,27 +325,20 @@ def get_session(session_id: str) -> Optional[Dict[str, Any]]:
     Orden:
     1. RAM local, si existe.
     2. MongoDB, si no está en RAM.
-
-    Esto permite:
-    - Desarrollo local rápido.
-    - Producción en Azure con múltiples workers.
     """
     session_id = str(session_id or "").strip()
 
     if not session_id:
         return None
 
-    # 1. Intento rápido en RAM.
     session = _SESSIONS.get(session_id)
 
     if session:
         return deepcopy(session)
 
-    # 2. Fallback productivo desde MongoDB.
     mongo_session = get_session_from_mongo(session_id)
 
     if mongo_session:
-        # Rehidrata RAM del worker actual para próximas llamadas.
         _SESSIONS[session_id] = deepcopy(mongo_session)
         return deepcopy(mongo_session)
 
@@ -330,14 +352,6 @@ def save_session(session: Dict[str, Any]) -> None:
     Guarda en:
     - RAM: fallback local.
     - MongoDB: persistencia real para Azure.
-
-    MongoDB es necesario para conservar:
-    - último producto seleccionado
-    - slot pendiente
-    - última pregunta
-    - historial
-    - contexto técnico
-    entre requests y workers distintos.
     """
     if not isinstance(session, dict):
         return
@@ -350,10 +364,8 @@ def save_session(session: Dict[str, Any]) -> None:
     session["updated_at"] = _now_iso()
     session["expires_in_seconds"] = SESSION_TTL_SECONDS
 
-    # Fallback local.
     _SESSIONS[session_id] = deepcopy(session)
 
-    # Persistencia productiva.
     save_session_to_mongo(session)
 
 
@@ -389,11 +401,13 @@ def append_message(session: Dict[str, Any], role: str, content: str) -> Dict[str
     """
     history = session.get("history", [])
 
-    history.append({
-        "role": role,
-        "content": content,
-        "timestamp": _now_iso(),
-    })
+    history.append(
+        {
+            "role": role,
+            "content": content,
+            "timestamp": _now_iso(),
+        }
+    )
 
     if len(history) > MAX_HISTORY_MESSAGES:
         history = history[-MAX_HISTORY_MESSAGES:]
@@ -419,7 +433,17 @@ def update_context(session: Dict[str, Any], new_context: Dict[str, Any]) -> Dict
     """
     Actualiza contexto conversacional sin sobrescribir con vacíos.
     """
+    if not isinstance(new_context, dict):
+        return session
+
     context = session.get("context", {})
+
+    if not isinstance(context, dict):
+        context = {key: None for key in TECHNICAL_CONTEXT_KEYS}
+
+    # Asegura que nuevas claves existan en sesiones antiguas.
+    for key in TECHNICAL_CONTEXT_KEYS:
+        context.setdefault(key, None)
 
     for key, value in new_context.items():
         if _is_empty(value):
@@ -436,7 +460,14 @@ def get_context(session: Dict[str, Any]) -> Dict[str, Any]:
     """
     Obtiene contexto técnico actual.
     """
-    return deepcopy(session.get("context", {}))
+    context = session.get("context", {})
+
+    if not isinstance(context, dict):
+        context = {}
+
+    normalized_context = {key: context.get(key) for key in TECHNICAL_CONTEXT_KEYS}
+
+    return deepcopy(normalized_context)
 
 
 # ============================================================
@@ -451,10 +482,6 @@ def set_last_assistant_question(
     """
     Guarda cuál fue la última pregunta que hizo NIA
     y qué campo intentaba llenar.
-
-    Ejemplo:
-    - field = "subtipo"
-    - question = "¿Qué tipo específico necesitas?"
     """
     session["last_assistant_question_field"] = field
     session["last_assistant_question_text"] = question
@@ -467,8 +494,6 @@ def set_last_assistant_question(
 def clear_last_assistant_question(session: Dict[str, Any]) -> Dict[str, Any]:
     """
     Limpia última pregunta activa.
-    Se usa cuando el usuario ya respondió el slot pendiente
-    o cuando NIA recomienda / completa la conversación.
     """
     session["last_assistant_question_field"] = None
     session["last_assistant_question_text"] = None
@@ -485,17 +510,25 @@ def get_last_assistant_question_field(session: Dict[str, Any]) -> Optional[str]:
     return session.get("last_assistant_question_field") or session.get("slot_pendiente")
 
 
+def get_last_assistant_question_text(session: Dict[str, Any]) -> Optional[str]:
+    """
+    Devuelve el texto de la última pregunta activa.
+    """
+    return session.get("last_assistant_question_text")
+
+
 def reset_technical_context(
     session: Dict[str, Any],
     preserve_history: bool = True,
     preserve_selected_product: bool = True,
 ) -> Dict[str, Any]:
     """
-    Limpia contexto técnico cuando cambia el producto/familia.
+    Limpia contexto técnico.
 
-    preserve_selected_product:
-    - True: mantiene último producto para continuidad comercial.
-    - False: limpia también selección comercial.
+    Nota:
+    Ya no se usa por cambio de familia manual.
+    Se usa cuando llega código exacto nuevo o cuando el flujo comercial
+    decide reiniciar explícitamente el contexto.
     """
     session["context"] = {key: None for key in TECHNICAL_CONTEXT_KEYS}
     session["filters"] = {}
@@ -526,7 +559,13 @@ def update_filters(session: Dict[str, Any], filters: Dict[str, Any]) -> Dict[str
     """
     Actualiza filtros activos para retrieval.
     """
+    if not isinstance(filters, dict):
+        return session
+
     current = session.get("filters", {})
+
+    if not isinstance(current, dict):
+        current = {}
 
     for key, value in filters.items():
         if _is_empty(value):
@@ -541,37 +580,20 @@ def update_filters(session: Dict[str, Any], filters: Dict[str, Any]) -> Dict[str
 def _normalize_product_for_memory(product: Dict[str, Any]) -> Dict[str, Any]:
     """
     Normaliza un producto para guardarlo como selección comercial.
-
-    Mantiene el documento original lo suficiente para que response_engine
-    pueda crear cards, pero agrega campos estándar.
     """
     if not isinstance(product, dict):
         return {}
 
-    codigo = (
-        product.get("codigo")
-        or product.get("CODIGO")
-        or ""
-    )
-
+    codigo = product.get("codigo") or product.get("CODIGO") or ""
     nombre = (
         product.get("nombre")
+        or product.get("NOMBRE_PRODUCTO")
         or product.get("DESCRIPCION_CORTA_PRE")
         or product.get("descripcion")
         or ""
     )
-
-    marca = (
-        product.get("marca")
-        or product.get("MARCA_LET")
-        or ""
-    )
-
-    referencia = (
-        product.get("referencia")
-        or product.get("REFERENCIA")
-        or ""
-    )
+    marca = product.get("marca") or product.get("MARCA_LET") or ""
+    referencia = product.get("referencia") or product.get("REFERENCIA") or ""
 
     normalized = deepcopy(product)
 
@@ -612,12 +634,6 @@ def set_last_selected_product(
 ) -> Dict[str, Any]:
     """
     Guarda el último producto seleccionado por NIA/usuario.
-
-    Esta es la pieza clave para:
-    - "Quiero cotizar este producto"
-    - "Envíame una cotización"
-    - "Lo quiero"
-    - "Solicitar cotización"
     """
     normalized = _normalize_product_for_memory(product)
 
@@ -654,6 +670,7 @@ def get_last_selected_product(session: Dict[str, Any]) -> Optional[Dict[str, Any
 
     return None
 
+
 # ============================================================
 # DATOS COMERCIALES
 # ============================================================
@@ -681,8 +698,6 @@ def update_commercial_data(
 ) -> Dict[str, Any]:
     """
     Actualiza datos comerciales sin sobrescribir con vacíos.
-
-    Estos datos se guardan en MongoDB al ejecutar save_session(session).
     """
     if not isinstance(new_data, dict):
         return session
@@ -692,7 +707,7 @@ def update_commercial_data(
     for key in COMMERCIAL_DATA_KEYS:
         value = new_data.get(key)
 
-        if value in [None, "", [], {}]:
+        if _is_empty(value):
             continue
 
         current[key] = value
@@ -788,6 +803,9 @@ def add_pending_question(session: Dict[str, Any], question: str) -> Dict[str, An
     """
     pending = session.get("pending_questions", [])
 
+    if not isinstance(pending, list):
+        pending = []
+
     if question and question not in pending:
         pending.append(question)
 
@@ -801,7 +819,7 @@ def pop_pending_question(session: Dict[str, Any]) -> Optional[str]:
     """
     pending = session.get("pending_questions", [])
 
-    if not pending:
+    if not isinstance(pending, list) or not pending:
         return None
 
     question = pending.pop(0)
@@ -814,7 +832,7 @@ def set_needs_clarification(session: Dict[str, Any], value: bool) -> Dict[str, A
     """
     Marca si NIA necesita más contexto.
     """
-    session["needs_clarification"] = value
+    session["needs_clarification"] = bool(value)
     return session
 
 
@@ -822,7 +840,7 @@ def set_conversation_complete(session: Dict[str, Any], value: bool) -> Dict[str,
     """
     Marca conversación como completada.
     """
-    session["conversation_complete"] = value
+    session["conversation_complete"] = bool(value)
     return session
 
 
@@ -850,14 +868,30 @@ def get_session_count() -> int:
 
 def extract_context_from_message(message: str) -> Dict[str, Any]:
     """
-    Extrae contexto útil desde un mensaje.
+    Extrae contexto objetivo desde un mensaje.
 
-    No inventa:
-    solo guarda señales claras que el usuario escribió.
+    Este extractor NO interpreta familias, marcas ni subtipos por listas
+    manuales.
+
+    Solo guarda datos explícitos como:
+    - código exacto;
+    - rangos y unidades;
+    - voltaje;
+    - potencia;
+    - rpm;
+    - corriente;
+    - entradas/salidas;
+    - protocolos de comunicación explícitos;
+    - señales de salida explícitas;
+    - diámetro/medida;
+    - aplicación textual si el usuario la expresa.
     """
-    original = message or ""
+    original = _safe_text(message)
     msg = _normalize(original)
     context: Dict[str, Any] = {}
+
+    if not original:
+        return context
 
     # --------------------------------------------------------
     # Código / referencia exacta dentro de frase
@@ -870,125 +904,47 @@ def extract_context_from_message(message: str) -> Dict[str, Any]:
         return context
 
     # --------------------------------------------------------
-    # Familia / categoría amplia
+    # Rangos / presión / temperatura / medidas con unidades
     # --------------------------------------------------------
-    if any(w in msg for w in ["sensor", "sensores", "transmisor", "sonda", "detector"]):
-        context["familia"] = "sensor"
+    range_pattern = (
+        r"[-+]?\d+(\.\d+)?\s*(a|-|~)\s*"
+        r"[-+]?\d+(\.\d+)?\s*"
+        r"(bar|psi|kpa|mpa|pa|c|°c|f|°f|m|cm|mm|metros|metro|ft|pies|kg|g|ton|lb|nm|n\.m|n-m)"
+    )
 
-    elif "motorreductor" in msg or "motor reductor" in msg:
-        context["familia"] = "motorreductor"
+    single_value_pattern = (
+        r"\b\d+(\.\d+)?\s*"
+        r"(bar|psi|kpa|mpa|pa|c|°c|f|°f|m|cm|mm|metros|metro|ft|pies|kg|g|ton|lb|nm|n\.m|n-m)\b"
+    )
 
-    elif any(w in msg for w in ["variador", "variadores", "drive", "vfd", "arrancador", "inversor de frecuencia"]):
-        context["familia"] = "variador"
+    if re.search(range_pattern, msg):
+        context["rango"] = original
+        context["medida"] = original
 
-    elif "motor" in msg:
-        context["familia"] = "motor"
+    elif re.search(single_value_pattern, msg):
+        context["medida"] = original
 
-    elif any(w in msg for w in ["plc", "hmi", "controlador logico", "controlador lógico"]):
-        context["familia"] = "plc"
+        if re.search(r"\b(bar|psi|kpa|mpa|pa)\b", msg):
+            context["presion"] = original
+            context["rango"] = original
 
-    elif any(w in msg for w in ["valvula", "valvulas", "válvula", "válvulas", "electrovalvula", "electroválvula", "cilindro"]):
-        context["familia"] = "valvula"
-
-    elif any(w in msg for w in ["termometro", "termómetro", "camara termica", "cámara térmica", "multimetro", "multímetro", "anemometro", "anemómetro"]):
-        context["familia"] = "medicion"
-
-    elif any(w in msg for w in ["ups", "nobreak", "no break"]):
-        context["familia"] = "ups"
-
-    elif any(w in msg for w in ["torquimetro", "torquímetro"]):
-        context["familia"] = "herramienta"
-        context["subtipo"] = "torquimetro"
-
-    elif any(w in msg for w in ["herramienta", "taladro", "esmeril", "llave"]):
-        context["familia"] = "herramienta"
-
-    elif any(w in msg for w in ["breaker", "contactor", "rele", "relé", "fuente", "guardamotor"]):
-        context["familia"] = "electrico"
-
-    # --------------------------------------------------------
-    # Subtipos de sensores industriales
-    # --------------------------------------------------------
-    if any(w in msg for w in ["fotoelectrico", "foto electrico", "fotocelda", "foto celda"]):
-        context["familia"] = "sensor"
-        context["subtipo"] = "fotoelectrico"
-
-    if any(w in msg for w in ["inductivo", "proximidad inductiva", "proximidad inductivo"]):
-        context["familia"] = "sensor"
-        context["subtipo"] = "inductivo"
-
-    if any(w in msg for w in ["capacitivo", "proximidad capacitiva", "proximidad capacitivo"]):
-        context["familia"] = "sensor"
-        context["subtipo"] = "capacitivo"
-
-    if any(w in msg for w in ["reflectivo", "retroreflectivo", "retro reflectivo"]):
-        context["familia"] = "sensor"
-        context["subtipo"] = "reflectivo"
-
-    if any(w in msg for w in ["barrera", "emisor receptor", "emisor y receptor"]):
-        context["familia"] = "sensor"
-        context["subtipo"] = "barrera"
-
-    if any(w in msg for w in ["difuso", "difusa"]):
-        context["familia"] = "sensor"
-        context["subtipo"] = "difuso"
-
-    # --------------------------------------------------------
-    # Subtipo / aplicación técnica
-    # --------------------------------------------------------
-    if "presion" in msg or "presión" in msg:
-        context["subtipo"] = "presion"
-        context["presion"] = original.strip()
-
-    if "temperatura" in msg:
-        context["subtipo"] = "temperatura"
-        context["temperatura"] = original.strip()
-
-    if "nivel" in msg:
-        context["subtipo"] = "nivel"
-        context["nivel"] = original.strip()
-
-    if "caudal" in msg:
-        context["subtipo"] = "caudal"
-        context["caudal"] = original.strip()
-
-    # --------------------------------------------------------
-    # Marca
-    # --------------------------------------------------------
-    known_brands = [
-        "siemens", "ifm", "abb", "festo", "smc", "omron",
-        "autonics", "pixsys", "ema", "weg", "schneider",
-        "danfoss", "yaskawa", "camozzi", "norgren", "parker",
-        "dayton", "proto", "black-decker", "cool-line", "horiba",
-        "fluke", "honeywell", "allen bradley", "rockwell",
-        "xinje", "array", "lutron",
-    ]
-
-    for brand in known_brands:
-        if brand in msg:
-            context["marca"] = brand
-            break
-
-    # --------------------------------------------------------
-    # Rangos / presión / temperatura
-    # --------------------------------------------------------
-    if re.search(r"[-+]?\d+(\.\d+)?\s*(a|-|~)\s*[-+]?\d+(\.\d+)?\s*(bar|psi|kpa|mpa|c|°c)", msg):
-        context["rango"] = original.strip()
-
-    elif re.search(r"\b\d+(\.\d+)?\s*(bar|psi|kpa|mpa|c|°c)\b", msg):
-        context["rango"] = original.strip()
+        if re.search(r"\b(c|°c|f|°f)\b", msg):
+            context["temperatura"] = original
+            context["rango"] = original
 
     # --------------------------------------------------------
     # Voltaje
     # --------------------------------------------------------
     voltaje_match = re.search(r"\b\d+(\.\d+)?\s*(v|vac|vca|vdc|vcc)\b", msg)
+
     if voltaje_match:
         context["voltaje"] = voltaje_match.group(0)
 
     # --------------------------------------------------------
     # Potencia
     # --------------------------------------------------------
-    potencia_match = re.search(r"\b\d+(\.\d+)?\s*(hp|kw|kva|va)\b", msg)
+    potencia_match = re.search(r"\b\d+(\.\d+)?\s*(hp|kw|kva|va|w)\b", msg)
+
     if potencia_match:
         context["potencia"] = potencia_match.group(0)
 
@@ -996,71 +952,172 @@ def extract_context_from_message(message: str) -> Dict[str, Any]:
     # RPM
     # --------------------------------------------------------
     if re.search(r"\b\d+(\.\d+)?\s*rpm\b", msg):
-        context["rpm"] = original.strip()
+        context["rpm"] = original
 
     # --------------------------------------------------------
     # Corriente
     # --------------------------------------------------------
-    if re.search(r"\b\d+(\.\d+)?\s*a\b", msg):
-        context["corriente"] = original.strip()
+    corriente_match = re.search(r"\b\d+(\.\d+)?\s*(a|amp|amperios?)\b", msg)
+
+    if corriente_match:
+        context["corriente"] = corriente_match.group(0)
 
     # --------------------------------------------------------
-    # Entradas / salidas PLC
+    # Frecuencia
+    # --------------------------------------------------------
+    frecuencia_match = re.search(r"\b\d+(\.\d+)?\s*(hz|khz|mhz)\b", msg)
+
+    if frecuencia_match:
+        context["frecuencia"] = frecuencia_match.group(0)
+
+    # --------------------------------------------------------
+    # Entradas / salidas PLC o módulos
     # --------------------------------------------------------
     match_entradas = re.search(r"\b(\d+)\s*entradas?\b", msg)
+
     if match_entradas:
         context["entradas"] = match_entradas.group(1)
 
     match_salidas = re.search(r"\b(\d+)\s*salidas?\b", msg)
+
     if match_salidas:
         context["salidas"] = match_salidas.group(1)
 
     # --------------------------------------------------------
-    # Comunicación
+    # Comunicación explícita
     # --------------------------------------------------------
-    if any(w in msg for w in ["modbus", "ethernet", "rs485", "rs232", "profibus", "profinet", "usb", "wifi", "wi-fi"]):
-        context["comunicacion"] = original.strip()
+    communication_terms = [
+        "modbus",
+        "ethernet",
+        "ethernet/ip",
+        "rs485",
+        "rs-485",
+        "rs232",
+        "rs-232",
+        "profibus",
+        "profinet",
+        "usb",
+        "wifi",
+        "wi-fi",
+        "bluetooth",
+        "canopen",
+        "hart",
+        "fieldbus",
+    ]
+
+    if any(term in msg for term in communication_terms):
+        context["comunicacion"] = original
 
     # --------------------------------------------------------
-    # Salida sensor / señal
+    # Señal / salida explícita
     # --------------------------------------------------------
-    if any(w in msg for w in ["pnp", "npn", "4-20", "4 20", "0-10v", "0 10v", "analogica", "analógica"]):
-        context["salida"] = original.strip()
+    output_terms = [
+        "pnp",
+        "npn",
+        "4-20",
+        "4 20",
+        "4 a 20",
+        "0-10v",
+        "0 10v",
+        "0 a 10v",
+        "analogica",
+        "analogico",
+        "analógica",
+        "analógico",
+        "digital",
+        "rele",
+        "relé",
+    ]
+
+    if any(term in msg for term in output_terms):
+        context["salida"] = original
 
     # --------------------------------------------------------
-    # Válvulas / neumática
+    # Conexión explícita
     # --------------------------------------------------------
-    if "neumatic" in msg or "neumatico" in msg or "neumatica" in msg:
-        context["tipo_accion"] = "neumatica"
+    connection_terms = [
+        "npt",
+        "bsp",
+        "brida",
+        "roscado",
+        "rosca",
+        "clamp",
+        "tri clamp",
+        "din",
+        "m12",
+        "m8",
+    ]
 
-    elif "electrica" in msg or "electrico" in msg:
-        if "valv" in msg:
-            context["tipo_accion"] = "electrica"
+    if any(term in msg for term in connection_terms):
+        context["conexion"] = original
 
-    elif "manual" in msg:
-        context["tipo_accion"] = "manual"
-
+    # --------------------------------------------------------
+    # Diámetro / fracciones / pulgadas
+    # --------------------------------------------------------
     if re.search(r"\b\d+/\d+\b", msg) or '"' in original or "'" in original:
-        context["diametro"] = original.strip()
-        context["medida"] = original.strip()
+        context["diametro"] = original
+        context["medida"] = original
 
     # --------------------------------------------------------
-    # Medida / torque / capacidad
+    # Material explícito
     # --------------------------------------------------------
-    if re.search(r"\b\d+(\.\d+)?\s*(nm|n.m|n-m)\b", msg):
-        context["medida"] = original.strip()
+    material_terms = [
+        "acero inoxidable",
+        "inoxidable",
+        "aluminio",
+        "bronce",
+        "laton",
+        "latón",
+        "plastico",
+        "plástico",
+        "pvc",
+        "policarbonato",
+        "caucho",
+        "neopreno",
+    ]
 
-        if context.get("familia") == "herramienta" or "torquimetro" in msg:
-            context["subtipo"] = "torquimetro"
-
-    elif re.search(r"\b\d+(\.\d+)?\s*(mm|cm|m|kg|ton|lb)\b", msg):
-        context["medida"] = original.strip()
+    if any(term in msg for term in material_terms):
+        context["material"] = original
 
     # --------------------------------------------------------
     # Aplicación explícita
     # --------------------------------------------------------
-    if any(w in msg for w in ["para ", "aplicacion", "aplicación", "uso", "trabajo"]):
-        context["aplicacion"] = original.strip()
+    application_markers = [
+        "para ",
+        "aplicacion",
+        "aplicación",
+        "uso",
+        "trabajo",
+        "proceso",
+        "maquina",
+        "máquina",
+        "tanque",
+        "pozo",
+        "ducto",
+        "ductos",
+        "tuberia",
+        "tubería",
+        "linea",
+        "línea",
+    ]
+
+    if any(marker in msg for marker in application_markers):
+        context["aplicacion"] = original
+
+    # --------------------------------------------------------
+    # Variables técnicas explícitas
+    # --------------------------------------------------------
+    if "presion" in msg or "presión" in msg:
+        context["presion"] = original
+
+    if "temperatura" in msg:
+        context["temperatura"] = original
+
+    if "nivel" in msg:
+        context["nivel"] = original
+
+    if "caudal" in msg or "flujo" in msg:
+        context["caudal"] = original
 
     return context
 
@@ -1076,12 +1133,14 @@ def process_memory_update(
 ) -> Dict[str, Any]:
     """
     Pipeline básico de memoria:
-    - guarda mensaje
-    - revisa si responde a un slot pendiente
-    - extrae contexto
-    - limpia contexto si cambia la familia
-    - limpia contexto si llega un código exacto nuevo
-    - actualiza intención
+    - guarda mensaje;
+    - revisa si responde a un slot pendiente;
+    - extrae contexto objetivo;
+    - limpia contexto si llega un código exacto nuevo;
+    - actualiza intención.
+
+    Ya no limpia por cambio de familia porque este módulo no clasifica
+    familias manuales.
     """
     append_message(session, role="user", content=user_message)
 
@@ -1090,16 +1149,9 @@ def process_memory_update(
 
     current_context = session.get("context", {})
 
-    # --------------------------------------------------------
-    # Primero intentamos interpretar el mensaje como respuesta
-    # a la última pregunta activa de NIA.
-    #
-    # Ejemplo:
-    # - NIA preguntó: ¿Qué tipo específico necesitas?
-    # - slot_pendiente: subtipo
-    # - Usuario: sensor fotoeléctrico
-    # - Resultado: subtipo = fotoelectrico
-    # --------------------------------------------------------
+    if not isinstance(current_context, dict):
+        current_context = {}
+
     pending_slot = get_last_assistant_question_field(session)
 
     slot_detection = detect_slot_response(
@@ -1113,26 +1165,21 @@ def process_memory_update(
     if slot_detection.get("matched"):
         slot_context = slot_detection.get("context", {})
 
-        # La respuesta al slot tiene prioridad sobre extracción general.
-        extracted = {
-            **extracted,
-            **slot_context,
-        }
+        if isinstance(slot_context, dict):
+            # La respuesta al slot tiene prioridad sobre extracción general.
+            extracted = {
+                **extracted,
+                **slot_context,
+            }
 
         if slot_detection.get("clear_pending_slot"):
             clear_last_assistant_question(session)
 
-    current_context = session.get("context", {})
-    current_family = current_context.get("familia")
-    new_family = extracted.get("familia")
-
     # --------------------------------------------------------
     # Caso prioritario: código exacto.
     # --------------------------------------------------------
-    # Si el usuario escribe "busco el P382280" o "Perdón es el 300203",
-    # ese código manda por encima de cualquier contexto anterior.
-    # Conservamos last_selected_product hasta que el orquestador confirme
-    # el nuevo producto encontrado.
+    # Si el usuario escribe un código exacto, ese código manda por encima
+    # de cualquier contexto técnico anterior.
     # --------------------------------------------------------
     if extracted.get("codigo_producto"):
         reset_technical_context(
@@ -1143,44 +1190,6 @@ def process_memory_update(
         update_context(session, extracted)
         reset_technical_questions(session)
         return session
-
-    # --------------------------------------------------------
-    # Si el usuario ahora habla de una familia de producto,
-    # y la memoria venía de un código exacto anterior, limpiamos
-    # ese código para evitar contaminación.
-    # --------------------------------------------------------
-    if new_family and current_context.get("codigo_producto"):
-        reset_technical_context(
-            session,
-            preserve_history=True,
-            preserve_selected_product=True,
-        )
-        current_context = session.get("context", {})
-        current_family = current_context.get("familia")
-
-    # --------------------------------------------------------
-    # Si cambia de familia, limpiar filtros técnicos anteriores.
-    # --------------------------------------------------------
-    if new_family and current_family and new_family != current_family:
-        reset_technical_context(
-            session,
-            preserve_history=True,
-            preserve_selected_product=False,
-        )
-
-    # --------------------------------------------------------
-    # Caso especial:
-    # Si ya estábamos en herramienta y el usuario responde "200nm",
-    # se interpreta como torque de torquímetro.
-    # --------------------------------------------------------
-    if (
-        current_context.get("familia") == "herramienta"
-        and extracted.get("medida")
-        and "nm" in _normalize(extracted.get("medida"))
-        and not extracted.get("subtipo")
-    ):
-        extracted["familia"] = "herramienta"
-        extracted["subtipo"] = "torquimetro"
 
     update_context(session, extracted)
 

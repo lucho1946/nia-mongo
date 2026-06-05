@@ -25,7 +25,7 @@
 # ============================================================
 
 from __future__ import annotations
-
+from retrieval.industrial_knowledge_retriever import build_industrial_context_for_prompt
 from typing import Any, Dict
 
 
